@@ -1,0 +1,275 @@
+#include "x86_domains.h"
+#include "native.h"
+
+#include <stdbool.h>
+
+#include "bytes.h"
+#include "console.h"
+
+enum {
+    PAGE = 4096, ENTRIES = PAGE / sizeof(uint32_t), KERNEL_BYTES = 0x10000,
+    DOMAIN_CODE = 0xc0000000u, DOMAIN_DATA = DOMAIN_CODE + PAGE,
+    PRESENT = 1, WRITABLE = 2,
+    RING1_CODE = 0x30, RING1_DATA = 0x38, RING2_CODE = 0x40, RING2_DATA = 0x48,
+    TSS_SELECTOR = 0x50, KERNEL_DATA = 0x10,
+    TLS_SELECTOR = 0x58, GDT_BYTES = TLS_SELECTOR + 8, IDT_ENTRIES = 0x81,
+    TSS_BYTES = 104, PROBE_PORT = 0x80, BITMAP_BYTES = PROBE_PORT / 8 + 2,
+    GP = 0x8000000du, PF = 0x8000000eu,
+};
+
+struct domain_memory {
+    uint32_t directories[2][ENTRIES];
+    uint32_t kernel_tables[2][ENTRIES];
+    uint32_t domain_tables[2][ENTRIES];
+    uint8_t code[2][PAGE];
+    uint8_t data[2][PAGE];
+    uint8_t app[NATIVE_PAGES * PAGE];
+    uint8_t app_file[NATIVE_FILE_LIMIT];
+};
+
+_Static_assert(sizeof(struct domain_memory) == DDOS_X86_DOMAIN_PAGES * PAGE,
+               "firmware arena size must match paging layout");
+
+struct __attribute__((packed)) gdtr {
+    uint16_t limit;
+    uint32_t base;
+};
+
+static struct domain_memory *memory;
+static uint32_t physical_base;
+static const uint32_t kernel_read_probe = 0x3232;
+#define DOMAIN_STATE __attribute__((section(".domain_state"), aligned(8)))
+
+static uint8_t tss[TSS_BYTES + BITMAP_BYTES] DOMAIN_STATE;
+static uint8_t domain_gdt[GDT_BYTES] DOMAIN_STATE;
+static uint32_t domain_idt[IDT_ENTRIES][2] DOMAIN_STATE;
+static volatile uint32_t write_probe DOMAIN_STATE;
+struct gdtr x86_domain_gdtr DOMAIN_STATE, x86_domain_idtr DOMAIN_STATE;
+
+extern unsigned x86_has_write_protect(void);
+extern uint32_t x86_enter_domain(uint32_t directory, unsigned service, struct native_frame *);
+_Static_assert(sizeof(struct native_frame) == 60, "x86 trap frame layout");
+extern uint8_t x86_payload_start[], x86_payload_end[];
+extern uint8_t x86_driver_probe[], x86_user_probe[], x86_user_port[];
+extern uint8_t x86_user_kernel_segment[], x86_user_kernel_offset[], x86_driver_cli[];
+extern uint8_t x86_user_unmapped[], x86_user_driver_segment[], x86_user_bridge_write[];
+extern uint8_t domain_fatal[], domain_ud[], domain_gp[], domain_pf[], domain_syscall[];
+extern uint8_t domain_bad[], domain_bad_error[];
+extern uint8_t __domain_bridge_start[], __domain_state_start[], __domain_stack_top[];
+
+void x86_domains_configure(uint32_t kernel_base, uint32_t arena_offset, uint32_t bytes)
+{
+    if ((kernel_base | arena_offset) & (PAGE - 1))
+        return;
+    if (arena_offset < KERNEL_BYTES || bytes < sizeof(struct domain_memory) ||
+        arena_offset > UINT32_MAX - kernel_base - sizeof(struct domain_memory))
+        return;
+    physical_base = kernel_base;
+    memory = (struct domain_memory *)(uintptr_t)arena_offset;
+}
+
+static uint32_t physical(const void *offset)
+{
+    return physical_base + (uint32_t)(uintptr_t)offset;
+}
+
+static void descriptor(uint8_t *slot, uint32_t base, unsigned limit,
+                       unsigned access, unsigned flags)
+{
+    write16(slot, limit);
+    write16(slot + 2, base);
+    slot[4] = base >> 16;
+    slot[5] = access;
+    slot[6] = flags | (limit >> 16);
+    slot[7] = base >> 24;
+}
+
+static void gate(unsigned vector, const uint8_t *entry, unsigned attributes)
+{
+    uint32_t address = (uintptr_t)entry;
+    domain_idt[vector][0] = 0x00080000 | (address & 0xffff);
+    domain_idt[vector][1] = (address & 0xffff0000) | (attributes << 8);
+}
+
+static bool prepare_descriptors(void)
+{
+    struct gdtr gdt;
+    __asm__ volatile ("sgdt %0" : "=m"(gdt));
+    if (gdt.limit < KERNEL_DATA + 7 || gdt.base < physical_base ||
+        gdt.base - physical_base > KERNEL_BYTES - KERNEL_DATA - 8)
+        return false;
+    const uint8_t *original = (const uint8_t *)(uintptr_t)(gdt.base - physical_base);
+    uint8_t *table = domain_gdt;
+    for (unsigned i = 0; i < GDT_BYTES; ++i)
+        table[i] = i < KERNEL_DATA + 8 ? original[i] : 0;
+    /* Descriptor access bits must already be set on the read-only bridge page. */
+    table[0x08 + 5] |= 1;
+    table[KERNEL_DATA + 5] |= 1;
+
+    /* Byte-granular, non-conforming code and separate writable data. */
+    descriptor(table + RING1_CODE, DOMAIN_CODE, PAGE - 1, 0xbb, 0x40);
+    descriptor(table + RING1_DATA, DOMAIN_DATA, PAGE - 1, 0xb3, 0x40);
+    descriptor(table + RING2_CODE, DOMAIN_CODE, PAGE - 1, 0xdb, 0x40);
+    descriptor(table + RING2_DATA, DOMAIN_DATA, PAGE - 1, 0xd3, 0x40);
+    for (unsigned i = 0; i < TSS_BYTES; ++i)
+        tss[i] = 0;
+    write32(tss + 4, (uintptr_t)__domain_stack_top);
+    write16(tss + 8, KERNEL_DATA);
+    write16(tss + 102, TSS_BYTES);
+    for (unsigned i = TSS_BYTES; i < sizeof(tss); ++i)
+        tss[i] = 0xff;
+    x86_domain_gdtr.limit = GDT_BYTES - 1;
+    x86_domain_gdtr.base = physical(domain_gdt);
+    x86_domain_idtr.limit = sizeof(domain_idt) - 1;
+    x86_domain_idtr.base = physical(domain_idt);
+    for (unsigned vector = 0; vector < IDT_ENTRIES; ++vector)
+        gate(vector, domain_fatal, 0x8e);
+    gate(0, domain_bad, 0x8e);
+    gate(1, domain_bad, 0x8e);
+    gate(3, domain_bad, 0x8e);
+    gate(4, domain_bad, 0x8e);
+    gate(5, domain_bad, 0x8e);
+    gate(6, domain_ud, 0x8e);
+    gate(7, domain_bad, 0x8e);
+    gate(10, domain_bad_error, 0x8e);
+    gate(11, domain_bad_error, 0x8e);
+    gate(12, domain_bad_error, 0x8e);
+    gate(17, domain_bad_error, 0x8e);
+    gate(13, domain_gp, 0x8e);
+    gate(14, domain_pf, 0x8e);
+    gate(0x80, domain_syscall, 0xce);
+    return true;
+}
+
+static bool build_address_spaces(void)
+{
+    unsigned bytes = (uintptr_t)x86_payload_end - (uintptr_t)x86_payload_start;
+    if (bytes > PAGE)
+        return false;
+    for (unsigned i = 0; i < ENTRIES; ++i) {
+        for (unsigned d = 0; d < 2; ++d) {
+            memory->directories[d][i] = 0;
+            memory->kernel_tables[d][i] = 0;
+            memory->domain_tables[d][i] = 0;
+        }
+    }
+    uint32_t bridge[] = {physical(__domain_bridge_start), physical(__domain_state_start),
+                         physical(__domain_stack_top) - PAGE};
+    for (unsigned i = 0; i < sizeof(bridge) / sizeof(bridge[0]); ++i) {
+        uint32_t address = bridge[i];
+        unsigned table = (address >> 22) - (physical_base >> 22);
+        unsigned entry = (address >> 12) & (ENTRIES - 1);
+        memory->kernel_tables[table][entry] = address | PRESENT | (i == 2 ? WRITABLE : 0);
+        for (unsigned d = 0; d < 2; ++d)
+            memory->directories[d][address >> 22] =
+                physical(memory->kernel_tables[table]) | PRESENT | WRITABLE;
+    }
+    for (unsigned d = 0; d < 2; ++d) {
+        memory->directories[d][DOMAIN_CODE >> 22] =
+            physical(memory->domain_tables[d]) | PRESENT | WRITABLE;
+        memory->domain_tables[d][0] = physical(memory->code[d]) | PRESENT;
+        memory->domain_tables[d][1] = physical(memory->data[d]) | PRESENT | WRITABLE;
+        for (unsigned i = 0; i < PAGE; ++i) {
+            memory->code[d][i] = i < bytes ? x86_payload_start[i] : 0xf4;
+            memory->data[d][i] = 0;
+        }
+    }
+    return true;
+}
+
+static void prepare_entry(unsigned ring)
+{
+    uint8_t *trap_stack = (uint8_t *)((uintptr_t)__domain_stack_top - PAGE);
+    for (unsigned i = 0; i < PAGE; ++i)
+        trap_stack[i] = 0;
+    descriptor(domain_gdt + TSS_SELECTOR, physical(tss), sizeof(tss) - 1, 0x89, 0);
+    tss[TSS_BYTES + PROBE_PORT / 8] =
+        ring == 1 ? (uint8_t)~(1u << (PROBE_PORT % 8)) : 0xff;
+}
+
+static uint32_t run(unsigned ring, const uint8_t *entry, uint32_t argument)
+{
+    struct native_frame frame = {
+        .esi = argument, .eip = (uintptr_t)entry - (uintptr_t)x86_payload_start,
+        .esp = PAGE - 16, .cs = (ring == 1 ? RING1_CODE : RING2_CODE) | ring,
+        .ss = (ring == 1 ? RING1_DATA : RING2_DATA) | ring,
+    };
+    prepare_entry(ring);
+    return x86_enter_domain(physical(memory->directories[ring - 1]), 0, &frame);
+}
+
+bool native_space_init(struct native_space *app)
+{
+    if (!memory || !x86_has_write_protect() || !prepare_descriptors() || !build_address_spaces())
+        return false;
+    descriptor(domain_gdt + RING2_DATA, DOMAIN_CODE, NATIVE_PAGES * PAGE - 1, 0xd3, 0x40);
+    app->image = memory->app;
+    app->file = memory->app_file;
+    app->pages = memory->domain_tables[1];
+    app->directory = physical(memory->directories[1]);
+    for (unsigned i = 0; i < NATIVE_PAGES * PAGE; ++i)
+        app->image[i] = 0;
+    for (unsigned i = 0; i < NATIVE_PAGES; ++i)
+        native_page(app, i, i == 0 || i == 1 || i == NATIVE_PAGES - 1);
+    app->frame.cs = RING2_CODE | 2;
+    app->frame.ss = RING2_DATA | 2;
+    app->frame.esp = NATIVE_PAGES * PAGE - 16;
+    return true;
+}
+
+void native_tls(uint32_t base, uint32_t limit)
+{
+    descriptor(domain_gdt + TLS_SELECTOR, DOMAIN_CODE + base, limit, 0xd3, 0x40);
+}
+
+void native_page(struct native_space *app, unsigned slot, bool present)
+{
+    app->pages[slot] = present ? physical(app->image + slot * PAGE) |
+                                 PRESENT | (slot ? WRITABLE : 0) : 0;
+}
+
+uint32_t native_step(struct native_space *app)
+{
+    prepare_entry(2);
+    return x86_enter_domain(app->directory, 1, &app->frame);
+}
+
+void x86_domains_test(void)
+{
+    if (!memory || !x86_has_write_protect() || !prepare_descriptors() || !build_address_spaces()) {
+        print("Privilege test unavailable\r\n");
+        return;
+    }
+
+    uint32_t driver = run(1, x86_driver_probe, 0);
+    bool driver_ok = (driver & ~0xffu) == 0x100 && read32(memory->data[0]) == 1;
+    bool cli_blocked = run(1, x86_driver_cli, 0) == GP;
+    uint32_t driver_kernel = run(1, x86_user_kernel_offset, physical_base - DOMAIN_DATA);
+    bool driver_memory = driver_kernel == GP || driver_kernel == PF;
+    print(driver_ok && cli_blocked && driver_memory ?
+          "Ring 1: port enabled, CLI denied, kernel unmapped\r\n" :
+                                     "Ring 1: privilege test failed\r\n");
+
+    uint32_t user = run(2, x86_user_probe, 0);
+    bool private_data = user == 2 && read32(memory->data[0]) == 1 &&
+                        read32(memory->data[1]) == 2;
+    bool io_blocked = run(2, x86_user_port, 0) == GP;
+    bool kernel_selector = run(2, x86_user_kernel_segment, 0) == GP;
+    bool driver_selector = run(2, x86_user_driver_segment, 0) == GP;
+    uint32_t unreachable = run(2, x86_user_unmapped, 0);
+    bool guard = unreachable == PF || unreachable == GP;
+    uint32_t kernel = run(2, x86_user_kernel_offset, physical_base - DOMAIN_DATA);
+    uint32_t kernel_data = run(2, x86_user_kernel_offset,
+                               physical(&kernel_read_probe) - DOMAIN_DATA);
+    write_probe = 0x1960;
+    uint32_t bridge = run(2, x86_user_bridge_write,
+                          physical((const void *)&write_probe) - DOMAIN_DATA);
+    bool kernel_memory = (kernel == GP || kernel == PF) &&
+                         (kernel_data == GP || kernel_data == PF) &&
+                         (bridge == GP || bridge == PF) && write_probe == 0x1960;
+    print(private_data && io_blocked && kernel_selector && driver_selector && guard ?
+          "Ring 2: syscall, private pages, and I/O restrictions passed\r\n" :
+          "Ring 2: privilege test failed\r\n");
+    print(kernel_memory ? "Ring 2: kernel unmapped, bridge write denied\r\n" :
+                          "Ring 2: kernel isolation test failed\r\n");
+}
