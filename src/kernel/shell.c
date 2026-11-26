@@ -254,8 +254,8 @@ static void create(const char *path, const char *text, bool directory)
     char selected = path_drive(&path);
     if (!available(selected))
         return;
-    if (selected != 'D') {
-        print("This command requires the ext2 volume on D:\r\n");
+    if (!vfs_ext2(selected - 'A')) {
+        report(EXT2_READ_ONLY);
         return;
     }
     if (!*path) {
@@ -271,12 +271,16 @@ static void create(const char *path, const char *text, bool directory)
 static void remove_entry(const char *path, bool directory)
 {
     char selected = path_drive(&path);
-    if (!available(selected) || selected == 'A')
+    if (!available(selected))
         return;
+    if (!vfs_ext2(selected - 'A')) {
+        report(EXT2_READ_ONLY);
+        return;
+    }
     struct ext2_inode item;
     if (directory && ext2_lookup(directory_for(selected), path, &item) == EXT2_OK &&
         item.number == directory_for(selected)) {
-        print("Directory is in use\\r\\n");
+        print("Directory is in use\r\n");
         return;
     }
     report(ext2_remove(directory_for(selected), path, directory));
@@ -293,11 +297,15 @@ static void rename_entry(char *old)
         name = route.name;
     }
     if (source != dest) {
-        print("Rename requires the same drive\\r\\n");
+        print("Rename requires the same drive\r\n");
         return;
     }
-    if (!available(source) || source == 'A')
+    if (!available(source))
         return;
+    if (!vfs_ext2(source - 'A')) {
+        report(EXT2_READ_ONLY);
+        return;
+    }
     report(ext2_rename(directory_for(source), from, directory_for(dest), name));
 }
 

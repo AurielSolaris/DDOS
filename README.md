@@ -363,6 +363,32 @@ on BIOS. Native applications use the static ELF32 loader.
 | `user` | Native startup code, C library, linker script, demo, and Nano-X desktop apps |
 | `src/include`, `tools` | Shared interfaces and the host-side ext2 formatter |
 
+## QEMU smoke checks
+
+Create a fresh USB image with the commands in [USB 2.0 storage](#usb-20-storage).
+Boot it with `--usb-image` on either BIOS or UEFI. Run these commands
+at the DDOS prompt.
+
+```text
+mkdir E:/smoke
+write E:/smoke/check.txt DDOS storage check
+ren E:/smoke/check.txt E:/smoke/renamed.txt
+ls E:/smoke
+type E:/smoke/renamed.txt
+del E:/smoke/renamed.txt
+rmdir E:/smoke
+ls E:/
+```
+
+The first listing should show `renamed.txt`. `TYPE` should print
+`DDOS storage check`. The final listing should show an empty drive.
+
+On UEFI, enter `NANOWM`, open **File Manager** from the DDOS menu, and
+select **E:** to check that the desktop can browse the same disk. To
+check copying, create a file on the USB image, select it, choose Copy,
+open a writable destination on **D:**, and choose Paste. Use a new
+filename so the destination is available.
+
 ## Component provenance
 
 | Component | Origin and DDOS changes |
