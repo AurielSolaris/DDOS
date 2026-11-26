@@ -9,7 +9,7 @@ enum {
     DOS_TOO_MANY_FILES = 4, DOS_ACCESS_DENIED = 5, DOS_BAD_HANDLE = 6,
     DOS_BAD_DRIVE = 15, DOS_SEEK_ERROR = 25, DOS_IO_ERROR = 31,
     DOS_FILE_EXISTS = 80, DOS_DISK_FULL = 112,
-    PROGRAM_BASE = 0x20000, PROGRAM_SIZE = 0x10000,
+    PROGRAM_BASE = 0x30000, PROGRAM_SIZE = 0x10000,
     DOS_PATH_SIZE = 256, WRITE_BLOCK = 1024, CARRY = 1,
 };
 
@@ -262,7 +262,7 @@ static unsigned write_file(struct dos_frame *frame)
     }
 
     unsigned done = 0;
-    while (done < frame->cx && file->position < EXT2_WRITE_LIMIT) {
+    while (done < frame->cx) {
         struct ext2_inode inode;
         if (!ext2_get_inode(file->inode, &inode))
             return DOS_IO_ERROR;

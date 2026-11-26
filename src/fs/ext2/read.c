@@ -1,15 +1,13 @@
 #include "internal.h"
 
-#include "ata.h"
 #include "bytes.h"
 
-static struct ext2_mount_state volumes[2];
+static struct ext2_mount_state volumes[3];
 struct ext2_mount_state *ext2_active = &volumes[0];
 
-void ext2_select(unsigned device)
+void ext2_select(unsigned volume)
 {
-    ext2_active = &volumes[device];
-    ata_select(device);
+    ext2_active = &volumes[volume];
 }
 
 bool ext2_mounted(void)
@@ -24,24 +22,16 @@ bool ext2_read_block(uint32_t block, void *buffer)
 {
     if (block >= ext2_volume.blocks)
         return false;
-    unsigned sectors = ext2_volume.block_size / 512;
-    for (unsigned i = 0; i < sectors; ++i) {
-        if (!ata_read(block * sectors + i, (uint8_t *)buffer + i * 512))
-            return false;
-    }
-    return true;
+    unsigned sectors = ext2_volume.block_size / BLOCK_SECTOR_BYTES;
+    return block_read(ext2_volume.device, block * sectors, sectors, buffer);
 }
 
 bool ext2_write_block(uint32_t block, const void *buffer)
 {
     if (block >= ext2_volume.blocks)
         return false;
-    unsigned sectors = ext2_volume.block_size / 512;
-    for (unsigned i = 0; i < sectors; ++i) {
-        if (!ata_write(block * sectors + i, (const uint8_t *)buffer + i * 512))
-            return false;
-    }
-    return true;
+    unsigned sectors = ext2_volume.block_size / BLOCK_SECTOR_BYTES;
+    return block_write(ext2_volume.device, block * sectors, sectors, buffer);
 }
 
 bool ext2_inode_location(uint32_t number, uint32_t *block, unsigned *offset)
@@ -102,11 +92,11 @@ static bool writable_layout(const uint8_t *super)
     return true;
 }
 
-bool ext2_mount(void)
+bool ext2_mount(const struct block_device *device)
 {
     ext2_volume.mounted = ext2_volume.writable = false;
-    uint32_t capacity = ata_probe();
-    if (capacity < 4 || !ata_read(2, metadata) || !ata_read(3, metadata + 512))
+    ext2_volume.device = device;
+    if (!block_read(device, 2, 2, metadata))
         return false;
     uint32_t log = read32(metadata + 24), revision = read32(metadata + 76);
     uint32_t compatible = read32(metadata + 92), incompatible = read32(metadata + 96);
@@ -125,7 +115,7 @@ bool ext2_mount(void)
     ext2_volume.filetype = (incompatible & EXT2_FILETYPE) != 0;
     if (ext2_volume.first_block != (log == 0) ||
         ext2_volume.blocks <= ext2_volume.first_block + 1 ||
-        ext2_volume.blocks > capacity / (ext2_volume.block_size / 512) ||
+        ext2_volume.blocks > device->sectors / (ext2_volume.block_size / BLOCK_SECTOR_BYTES) ||
         ext2_volume.inodes < EXT2_ROOT ||
         !ext2_volume.blocks_per_group || !ext2_volume.inodes_per_group ||
         ext2_volume.blocks_per_group > ext2_volume.block_size * 8 ||
@@ -139,7 +129,7 @@ bool ext2_mount(void)
     if ((ext2_volume.inodes - 1) / ext2_volume.inodes_per_group >= groups)
         return false;
     ext2_volume.groups = groups;
-    bool writable = revision == 1 && writable_layout(metadata);
+    bool writable = device->write_sector && device->flush && revision == 1 && writable_layout(metadata);
     struct ext2_inode root;
     if (!ext2_get_inode(EXT2_ROOT, &root) || root.kind != EXT2_DIRECTORY ||
         !root.size || root.size % ext2_volume.block_size)
@@ -290,6 +280,37 @@ enum ext2_result ext2_lookup(uint32_t start, const char *path, struct ext2_inode
 enum ext2_result ext2_lookup_dos(uint32_t start, const char *path, struct ext2_inode *out)
 {
     return lookup(start, path, out, true);
+}
+
+enum ext2_result ext2_next(const struct ext2_inode *dir, uint32_t *position,
+                           char *name, struct ext2_inode *out)
+{
+    unsigned block_size = ext2_volume.block_size;
+    if (dir->kind != EXT2_DIRECTORY || dir->size % block_size)
+        return EXT2_INVALID;
+    while (*position < dir->size) {
+        unsigned offset = *position % block_size;
+        uint32_t physical;
+        if (!ext2_map_block(dir, *position / block_size, &physical) ||
+            !physical || !ext2_read_block(physical, data))
+            return EXT2_IO;
+        while (offset < block_size) {
+            const uint8_t *entry = data + offset;
+            unsigned record, length;
+            if (!ext2_dir_record(entry, block_size - offset, &record, &length))
+                return EXT2_IO;
+            *position += record;
+            offset += record;
+            uint32_t number = read32(entry);
+            if (!number)
+                continue;
+            for (unsigned i = 0; i < length; ++i)
+                name[i] = entry[8 + i];
+            name[length] = 0;
+            return ext2_get_inode(number, out) ? EXT2_OK : EXT2_IO;
+        }
+    }
+    return EXT2_MISSING;
 }
 
 enum ext2_result ext2_list(const struct ext2_inode *dir, ext2_entry_fn visit)

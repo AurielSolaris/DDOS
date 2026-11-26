@@ -17,7 +17,7 @@ enum {
     DESK_ERROR = GR_RGB(255, 189, 189),
     DESK_WALL = GR_RGB(26, 62, 109),
 };
-enum desk_icon { ICON_DDOS, ICON_CALCULATOR, ICON_SETTINGS, ICON_TASKS };
+enum desk_icon { ICON_DDOS, ICON_CALCULATOR, ICON_SETTINGS, ICON_TASKS, ICON_FILES };
 
 static inline void desk_fill(GR_DRAW_ID id, GR_GC_ID gc, int x, int y, int w, int h, GR_COLOR c)
 {
@@ -70,6 +70,7 @@ static inline void desk_icon(GR_DRAW_ID id, GR_GC_ID gc, enum desk_icon icon, in
         {0x3c, 0x42, 0x5a, 0x42, 0x5a, 0x42, 0x5a, 0x3c},
         {0x18, 0x5a, 0x7e, 0xe7, 0xe7, 0x7e, 0x5a, 0x18},
         {0x00, 0x04, 0x06, 0x36, 0x36, 0x76, 0x76, 0x00},
+        {0x00, 0x70, 0x7e, 0x81, 0xbd, 0x81, 0x7e, 0x00},
     };
     for (int row = 0; row < 8; ++row) {
         int start = 0;

@@ -89,8 +89,13 @@ static unsigned keyboard_byte(unsigned scan)
         extended = true;
     } else if (extended) {
         extended = false;
-        if (scan == 0x1c)
-            return '\r';
+        switch (scan) {
+        case 0x1c: return '\r';
+        case 0x48: return DDOS_KEY_UP;
+        case 0x50: return DDOS_KEY_DOWN;
+        case 0x49: return DDOS_KEY_PAGE_UP;
+        case 0x51: return DDOS_KEY_PAGE_DOWN;
+        }
     } else if ((scan & 0x7f) == 0x2a || (scan & 0x7f) == 0x36) {
         unsigned bit = (scan & 0x7f) == 0x2a ? 1 : 2;
         if (scan & 0x80)
@@ -99,6 +104,8 @@ static unsigned keyboard_byte(unsigned scan)
             shift |= bit;
     } else if (scan == 0x3c) {
         return DDOS_KEY_F2;
+    } else if (scan == 0x3e) {
+        return DDOS_KEY_F4;
     } else if (scan < sizeof(normal)) {
         return shift ? shifted[scan] : normal[scan];
     }

@@ -43,6 +43,9 @@ def make_boot_image(boot, kernel):
 
 KERNEL_COMPONENTS = {
     "power": "src/arch/x86/power.c",
+    "ehci": "src/drivers/ehci.c",
+    "usb-storage": "src/drivers/usb-storage.c",
+    "block": "src/drivers/block.c",
     "ata": "src/drivers/ata.c",
     "ext2-read": "src/fs/ext2/read.c",
     "ext2-write": "src/fs/ext2/write.c",
@@ -124,7 +127,7 @@ def main():
         args.microwindows = BUILD / "microwindows"
     if args.desktop and (args.microwindows is None or
                          any(not (args.microwindows / name).is_file()
-                             for name in ("nano-X", "nanowm", "taskbar", "calculator", "settings", "task_mgr"))):
+                             for name in ("nano-X", "nanowm", "taskbar", "calculator", "settings", "task_mgr", "file_manager"))):
         parser.error("Desktop binaries are missing. Run sh tools/build-microwindows.sh or pass --microwindows.")
     if args.system_image.resolve() in (BUILD / "data.ext2", BUILD / "ddos.img"):
         parser.error("--system-image must be separate from the persistent data and boot images")

@@ -5,7 +5,8 @@
 #include <stdio.h>
 #include <unistd.h>
 
-enum { WIDTH = 464, SETTINGS_H = 284, TASKS_H = 360 };
+enum { WIDTH = 464, SETTINGS_H = 284, TASKS_H = 396, TASK_ROWS = 8 };
+static unsigned task_page;
 
 static void memory_text(char *out, unsigned size, uint32_t kib)
 {
@@ -65,8 +66,12 @@ static void task_manager(GR_WINDOW_ID window, GR_GC_ID gc, const struct ddos_des
     desk_text(window, gc, 28, 145, "PID", DESK_MUTED);
     desk_text(window, gc, 88, 145, "Process", DESK_MUTED);
     desk_text(window, gc, 323, 145, "Mapped RAM", DESK_MUTED);
-    for (uint32_t i = 0; i < status->task_count; ++i) {
-        int y = 164 + i * 23;
+    unsigned pages = status->task_count ? (status->task_count + TASK_ROWS - 1) / TASK_ROWS : 1;
+    if (task_page >= pages)
+        task_page = pages - 1;
+    unsigned first = task_page * TASK_ROWS;
+    for (uint32_t i = first; i < first + TASK_ROWS && i < status->task_count; ++i) {
+        int y = 164 + (i - first) * 23;
         char pid[16], memory[24];
         snprintf(pid, sizeof(pid), "%u", status->tasks[i].pid);
         memory_text(memory, sizeof(memory), status->tasks[i].mapped_kib);
@@ -76,6 +81,11 @@ static void task_manager(GR_WINDOW_ID window, GR_GC_ID gc, const struct ddos_des
         desk_text(window, gc, 88, y + 6, status->tasks[i].name, DESK_ON_SURFACE);
         desk_text(window, gc, 323, y + 6, memory, DESK_ON_SURFACE);
     }
+    char footer[40];
+    snprintf(footer, sizeof(footer), "Page %u of %u", task_page + 1, pages);
+    desk_text(window, gc, 28, 366, footer, DESK_MUTED);
+    if (pages > 1)
+        desk_text(window, gc, 240, 366, "Page Up / Page Down", DESK_MUTED);
 }
 
 int main(int argc, char **argv)
@@ -108,8 +118,15 @@ int main(int argc, char **argv)
         if (event.type == GR_EVENT_TYPE_CLOSE_REQ ||
             (event.type == GR_EVENT_TYPE_KEY_DOWN && (event.keystroke.ch == 'q' || event.keystroke.ch == 'Q')))
             break;
-        if (event.type != GR_EVENT_TYPE_EXPOSURE && event.type != GR_EVENT_TYPE_TIMER)
+        if (manager && event.type == GR_EVENT_TYPE_KEY_DOWN &&
+            (event.keystroke.ch == MWKEY_PAGEUP || event.keystroke.ch == MWKEY_PAGEDOWN)) {
+            if (event.keystroke.ch == MWKEY_PAGEUP && task_page)
+                --task_page;
+            else if (event.keystroke.ch == MWKEY_PAGEDOWN)
+                ++task_page;
+        } else if (event.type != GR_EVENT_TYPE_EXPOSURE && event.type != GR_EVENT_TYPE_TIMER) {
             continue;
+        }
         struct ddos_desktop_status status;
         if (syscall(DDOS_GET_STATUS, &status) < 0) {
             desk_panel(window, gc, WIDTH, height);

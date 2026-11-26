@@ -11,8 +11,8 @@
 
 enum {
     BAR_H = 38, START_W = 104, TILE_W = 108, TILE_H = 88,
-    MENU_W = 304, MENU_H = 298, SEARCH_Y = 16,
-    ROW_TOP = 72, ROW_H = 46, POWER_Y = 226,
+    MENU_W = 304, MENU_H = 344, SEARCH_Y = 16,
+    ROW_TOP = 72, ROW_H = 46, POWER_Y = 272,
 };
 
 struct app {
@@ -26,7 +26,10 @@ static struct app apps[] = {
     {"Calculator", "/bin/calculator", "calc arithmetic", ICON_CALCULATOR, 0, 0},
     {"Settings", "/bin/settings", "system info about", ICON_SETTINGS, 0, 0},
     {"Task Manager", "/bin/task_mgr", "ram memory processes", ICON_TASKS, 0, 0},
+    {"File Manager", "/bin/file_manager", "files explorer drives", ICON_FILES, 0, 0},
 };
+
+enum { APP_COUNT = sizeof(apps) / sizeof(apps[0]) };
 
 static GR_WINDOW_ID bar, menu;
 static GR_GC_ID gc;
@@ -85,10 +88,10 @@ static bool contains(const char *text)
     return false;
 }
 
-static unsigned visible_apps(struct app *visible[3])
+static unsigned visible_apps(struct app *visible[APP_COUNT])
 {
     unsigned count = 0;
-    for (unsigned i = 0; i < sizeof(apps) / sizeof(apps[0]); ++i) {
+    for (unsigned i = 0; i < APP_COUNT; ++i) {
         if (contains(apps[i].title) || contains(apps[i].keywords))
             visible[count++] = &apps[i];
     }
@@ -97,7 +100,7 @@ static unsigned visible_apps(struct app *visible[3])
 
 static void paint_menu(void)
 {
-    struct app *visible[3];
+    struct app *visible[APP_COUNT];
     unsigned count = visible_apps(visible);
     desk_panel(menu, gc, MENU_W, MENU_H);
     desk_round(menu, gc, 16, SEARCH_Y, MENU_W - 32, 40, 12, DESK_SURFACE);
@@ -197,7 +200,7 @@ static void menu_click(int x, int y, int width)
     }
     if (x < 16 || x >= MENU_W - 16 || y < ROW_TOP)
         return;
-    struct app *visible[3];
+    struct app *visible[APP_COUNT];
     unsigned row = (y - ROW_TOP) / ROW_H;
     if (row < visible_apps(visible) && (y - ROW_TOP) % ROW_H < 40) {
         toggle_menu(width);
@@ -207,7 +210,7 @@ static void menu_click(int x, int y, int width)
 
 static void menu_key(unsigned key, int width)
 {
-    struct app *visible[3];
+    struct app *visible[APP_COUNT];
     unsigned count = visible_apps(visible);
     size_t length = strlen(query);
     if (key == MWKEY_ENTER && count) {
@@ -259,7 +262,7 @@ int main(void)
                           GR_EVENT_MASK_KEY_DOWN | GR_EVENT_MASK_FOCUS_OUT);
     GrGrabKey(bar, MWKEY_F2, GR_GRAB_HOTKEY_EXCLUSIVE);
 
-    for (unsigned i = 0; i < sizeof(apps) / sizeof(apps[0]); ++i) {
+    for (unsigned i = 0; i < APP_COUNT; ++i) {
         apps[i].tile = GrNewWindowEx(fixed | GR_WM_PROPS_NOFOCUS, "Desktop shortcut",
                                      GR_ROOT_WINDOW_ID, 24, 24 + i * (TILE_H + 12),
                                      TILE_W, TILE_H, DESK_CONTAINER);
@@ -272,7 +275,7 @@ int main(void)
     for (;;) {
         GR_EVENT event;
         GrGetNextEvent(&event);
-        for (unsigned i = 0; i < sizeof(apps) / sizeof(apps[0]); ++i) {
+        for (unsigned i = 0; i < APP_COUNT; ++i) {
             if (apps[i].child > 0 && waitpid(apps[i].child, 0, WNOHANG) == apps[i].child)
                 apps[i].child = 0;
             if (event.type == GR_EVENT_TYPE_EXPOSURE && event.exposure.wid == apps[i].tile)

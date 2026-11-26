@@ -77,7 +77,7 @@ include="$root/src/include"
 if command -v cygpath >/dev/null 2>&1; then
     include="$(cygpath -m "$include")"
 fi
-for app in taskbar calculator system_apps; do
+for app in taskbar calculator system_apps file_manager; do
     source="$root/user/desktop/$app.c"
     if command -v cygpath >/dev/null 2>&1; then
         source="$(cygpath -m "$source")"
@@ -91,7 +91,7 @@ cp bin/system_apps bin/settings
 cp bin/system_apps bin/task_mgr
 output="$build_dir/microwindows"
 mkdir -p "$output"
-for name in nano-X nanowm taskbar calculator settings task_mgr; do
+for name in nano-X nanowm taskbar calculator settings task_mgr file_manager; do
     cp "bin/$name" "$output/$name"
     llvm-strip "$output/$name"
 done

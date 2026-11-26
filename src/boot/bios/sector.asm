@@ -1,7 +1,7 @@
 bits 16
 org 0x7c00
 
-RESERVED_SECTORS equ 105
+RESERVED_SECTORS equ 241
 
 jmp short boot
 nop
@@ -53,6 +53,11 @@ boot:
     int 0x13
     jc disk_error
     add bx, 512
+    jnc .advance
+    mov ax, es
+    add ax, 0x1000
+    mov es, ax
+.advance:
     inc si
     cmp si, RESERVED_SECTORS
     jb .next

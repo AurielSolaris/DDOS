@@ -26,13 +26,14 @@ python boot.py --uefi
 At the DDOS prompt, enter `NANOWM`. Click the **DDOS** button at the left
 of the taskbar to open the app menu. Type a search and press Enter to open
 the selected result, or click any visible result. Tab cycles through
-matches. Calculator, Settings, and Task Manager also have desktop icons.
+matches. Calculator, Settings, Task Manager, and File Manager also have desktop icons.
 **Restart** and **Shutdown** are available at the bottom of the popup on
 the default QEMU PC. Esc returns to the DDOS prompt.
 
 Settings shows firmware, display, and installed guest RAM information.
 Task Manager refreshes every second and reports mapped RAM per native
-process and for the 8 MiB task arena, alongside QEMU's installed RAM.
+process and for the 24 MiB task arena, alongside QEMU's installed RAM.
+Use Page Up and Page Down when the task list spans multiple pages.
 Both apps have NanoWM title bars so they can be moved or closed.
 
 Press F2 to open Calculator or bring its window forward. Type `CALC`
@@ -41,6 +42,13 @@ directly. Calculator supports mouse input and the number and operator
 keys. Enter evaluates, Backspace deletes, N changes the sign, C clears,
 and Q closes Calculator.
 
+File Manager opens on `D:/`. Use the drive buttons to browse `B:/`,
+`D:/`, or a mounted USB disk on `E:/`. Select a folder and choose Open
+or press Enter. Copy and Paste transfer regular files between folders
+or drives without overwriting an existing file. Rename and New folder
+accept names in the footer. Confirm edits or deletion with Enter and
+cancel with F4. Delete removes files and empty folders.
+
 The taskbar displays date and time in UTC from the PC clock. Add
 `--debug-log build/qemu.log` to the boot command to capture guest
 diagnostics. QEMU uses a temporary copy of the system image, so the build
@@ -48,8 +56,8 @@ can replace it while the VM runs. If an older VM holds the original file
 open, pass `--system-image build/system-desktop.ext2` to both scripts.
 
 The QEMU launcher attaches three images. The x64 UEFI boot file is
-built at `build/uefi/EFI/BOOT/BOOTX64.EFI`. The kernel exposes a four-letter
-mount table.
+built at `build/uefi/EFI/BOOT/BOOTX64.EFI`. The kernel reserves
+`E:/` for an optional USB disk.
 
 | Drive | Purpose |
 | --- | --- |
@@ -57,6 +65,7 @@ mount table.
 | `B:/` | Read-only ext2 system image at `build/system.ext2`, with `bin`, `etc`, and `tmp` directories. |
 | `C:/` | Reserved for swap. Native path calls return `ENODEV`. |
 | `D:/` | Persistent ext2 data image at `build/data.ext2`. Rebuilding preserves it. |
+| `E:/` | Optional ext2 USB 2.0 mass-storage volume detected at boot. Native path calls return `ENODEV` when absent. |
 
 Native absolute paths default to `B:/`. Explicit drive-qualified paths
 select their mount. `/dev/null` and `/dev/zero` use kernel nodes. `/dev/console` and
@@ -94,15 +103,37 @@ dir
 `LS` and `DIR` list a directory. `CD` accepts relative and absolute ext2 paths,
 including `..`. Names on ext2 are case-sensitive. `MKDIR` and `WRITE` create
 new entries on the DDOS-formatted image. `WRITE` takes a space-free path
-followed by optional text. New directory entries use the free space in
-existing directory blocks. The DOS handle API also supports writing and
-resizing existing regular files within its size limit.
+followed by optional text. Use `DEL` for files, `RMDIR` for empty
+directories, and `REN` for same-drive renames. Renaming to a name already
+in use fails. DDOS can expand a writable directory up to 12 blocks.
+The DOS and native file APIs can write through single and double indirect
+blocks. The write path supports logical files up to 8 MiB. The default
+4 MiB data image limits how much file data can be allocated, and disk
+space is shared across all of its files and metadata.
 
 The reader supports ext2's 1, 2, and 4 KiB block sizes, regular files,
 directories, sparse blocks, and direct and indirect block pointers.
 Compatible external ext2 images mount read-only. Symlink traversal is
-unimplemented. The ATA PIO driver reads the system image on the secondary
-IDE master and the data image on the primary IDE slave.
+unimplemented. The block layer dispatches sector reads, writes, and
+flushes to both ATA and USB drivers. The ATA PIO driver accesses the
+system image on the secondary IDE master and the data image on the
+primary IDE slave.
+
+### USB 2.0 storage
+
+Create an optional raw USB disk and attach it to QEMU with these commands.
+
+```powershell
+python -c "from pathlib import Path; from tools.mkext2 import create_if_missing; create_if_missing(Path('build/usb.ext2'))"
+python boot.py --uefi --usb-image build/usb.ext2
+```
+
+The EHCI driver probes PCI bus 0 and uses polled control and bulk transfers.
+DDOS mounts one directly connected high-speed device with a 512-byte
+logical sector, SCSI transparent commands, and Bulk-Only Transport.
+The ext2 filesystem starts at sector zero. Only the supported DDOS data
+layout is writable. Partition tables, USB hubs, and runtime hotplug are
+pending.
 
 ## Bootloader and CPU state
 
@@ -143,7 +174,7 @@ return `-ENOSYS`. A fault returns control to the Ring 0 test harness.
 
 These domains run built-in probes, and Ring 2 also runs the native C program. The existing device drivers
 still run in Ring 0, and the BIOS DOS loader uses its separate real-mode
-path. Preemptive scheduling and driver IPC are pending.
+path. Driver IPC is pending.
 
 ## Native C runtime
 
@@ -163,15 +194,17 @@ memory mapping, TLS setup, and basic memory and string routines.
 | Processes | `fork`, `execve`, `wait4` for a child PID or any child, `exit`, `exit_group`, PID and parent lookup |
 | Signals | Standard signals with `rt_sigaction`, `rt_sigprocmask`, legacy `sigreturn`, and `kill`. Supports simple handlers and SIGCHLD delivery. |
 | Memory and TLS | `brk`, `mmap2`, `munmap`, `set_thread_area`, and `set_tid_address` |
-| Files and descriptors | `open`, `openat`, `read`, `write`, `writev`, `close`, `dup`, `dup2`, `_llseek`, `stat64` family, `chdir`, `mkdir`, and `mkdirat`. Path syscalls with a directory descriptor accept `AT_FDCWD`. |
+| Files and descriptors | `open`, `openat`, `read`, `write`, `writev`, `close`, `dup`, `dup2`, `_llseek`, `stat64` family, `chdir`, `mkdir(at)`, `getdents64`, `unlink(at)`, `rmdir`, and `rename(at/at2)`. Path syscalls with a directory descriptor accept `AT_FDCWD`. Open entries and active working directories return `EBUSY` on deletion. Renames preserve existing destination files and return `EXDEV` across volumes. |
 | IPC and timing | `pipe`, `pipe2`, `poll`, `_newselect`, relative `nanosleep`, and monotonic or RTC-backed `clock_gettime`. `fcntl` supports descriptor duplication, nonblocking I/O, append, and close-on-exec. |
 
-The scheduler switches among up to eight Ring 2 processes at syscalls.
-Each task has private memory, register state, and TLS. Forked descriptors
-share file offsets and status flags. Blocking pipe and console I/O and
-timer waits let other tasks run. Execution is cooperative. A program
-that never makes a syscall can hold the CPU. BIOS native tasks require
-at least 9 MiB of contiguous extended memory reported by the firmware.
+The scheduler runs up to 24 Ring 2 processes. A PIT interrupt preempts
+user code about every 10 ms. Each task has private memory, register and
+FPU state, and TLS. Forked descriptors share offsets and status flags.
+System calls remain non-preemptible in Ring 0. Blocking pipe and console
+I/O and timer waits yield to other tasks. File writes may return a
+partial count so the kernel can schedule other tasks between chunks.
+BIOS requires about 25 MiB of contiguous extended memory for the native
+task images, executable staging, and runtime metadata.
 
 `set_thread_area` supplies one DPL-2 data descriptor. The DDOS C library
 and the locally built musl archive load it with selector RPL 2.
@@ -191,7 +224,7 @@ DDOS also accepts case-insensitive Windows-style names such as
 `\\.\pipe\desktop`. Open a name with `O_CREAT | O_EXCL | O_RDWR` to
 create a server endpoint, then open the same name with `O_RDWR` for one
 duplex client connection. Closing the peer allows pending data to drain
-before EOF. DDOS supports eight pipe pairs with 512 bytes per direction.
+before EOF. DDOS supports 16 pipe pairs with 512 bytes per direction.
 
 The local `AF_UNIX` stream adapter routes `socket`, `bind`, `listen`,
 `connect`, and `accept` to the same pipe queues. Nano-X can use its
@@ -227,7 +260,7 @@ to use explicitly supplied binaries. BusyBox provides `busybox` and
 `sh` with the [Hush and applet configuration](tools/busybox.config).
 The runit tools are `runit`, `runit-init`, `runsvdir`, `runsv`, and `sv`.
 The graphics build installs `nano-X`, `nanowm`, `taskbar`, `calculator`,
-`settings`, and `task_mgr`.
+`settings`, `task_mgr`, and `file_manager`.
 
 The native loader also accepts scripts whose shebang names an absolute
 ELF interpreter path. The image includes executable runit stages in
@@ -236,7 +269,7 @@ and a login profile that checks for `/dev/fb0`.
 
 Boot currently goes directly to the DDOS prompt. Runit remains installed
 in B: for development. PID 1 supervision needs writable service state,
-directory enumeration, terminal control, and `getcwd`. Use `NANOWM`
+terminal control, and `getcwd`. Use `NANOWM`
 from the DDOS prompt to open the UEFI desktop.
 
 ## DOS syscall interface
@@ -280,9 +313,9 @@ For the calls below, carry clear means success. On error, carry is set and
 | `43h` / `AL=00h` | Read file attributes | Path in `DS:DX`, attributes in `CX` |
 | `45h`, `46h` | Duplicate a file handle and share its position | Handle in `BX`, new handle in `AX` for `45h` or target handle in `CX` for `46h` |
 
-A zero-byte write sets the file length to the current position. File writes
-support up to 12 KiB on DDOS-formatted ext2 images. Larger files remain
-readable. `AH=40h` also writes to console handles `1` and `2`. File rename,
+A zero-byte write sets the file length to the current position.
+`AH=40h` can write ext2 files through single and double indirect blocks,
+and writes to console handles `1` and `2`. File rename,
 deletion, directory enumeration through Find First/Next, sharing modes,
 and FCB calls are unimplemented. Calls outside the implemented set return
 carry set and `AX=0001h`. Native protected-mode applications use the separate INT 80h interface.
@@ -324,10 +357,10 @@ on BIOS. Native applications use the static ELF32 loader.
 | --- | --- |
 | `src/boot/bios`, `src/boot/uefi` | Firmware entry and platform services |
 | `src/arch/x86` | Protected-mode support and linker script |
-| `src/drivers` | ATA disk I/O and the console bitmap font |
+| `src/drivers` | Block devices, ATA PIO, EHCI USB storage, PS/2, and the console bitmap font |
 | `src/fs` | VFS drive routing, FAT12, and ext2 |
 | `src/kernel` | Shell, console helpers, DOS executable loader and DOS file handles |
-| `user` | Native startup code, C library, linker script, and demo |
+| `user` | Native startup code, C library, linker script, demo, and Nano-X desktop apps |
 | `src/include`, `tools` | Shared interfaces and the host-side ext2 formatter |
 
 ## Component provenance
@@ -337,12 +370,13 @@ on BIOS. Native applications use the static ELF32 loader.
 | DOS shell, COM/MZ loader, and INT 21h file calls | DDOS C/NASM implementation of a subset of DOS conventions, using the published [Microsoft MS-DOS 4.0 source](https://github.com/microsoft/MS-DOS/tree/main/v4.0) as a local reference. The drive-letter paths, DOS command names, PSP, and interrupt conventions come from DOS. |
 | BIOS boot sector and UEFI boot application | DDOS boot code. BIOS loads the flat kernel from reserved FAT12 sectors. The UEFI application uses the firmware GOP interface, then hands off to the 32-bit kernel. [UEFI specifications](https://uefi.org/specifications). |
 | Kernel, processes, VFS, and system image builder | DDOS implementations in C, NASM, and Python. FAT12, ATA PIO, ext2, and static ELF32 use their underlying formats and interfaces. DDOS combines drive letters with POSIX absolute paths. |
+| Block layer and USB 2.0 storage | DDOS sector interface and DOS-style drive routing. The EHCI controller and USB mass-storage implementation were written for DDOS with FreeBSD's [EHCI driver](https://github.com/freebsd/freebsd-src/blob/main/sys/dev/usb/controller/ehci.c) and [umass driver](https://cgit.freebsd.org/src/tree/sys/dev/usb/storage/umass.c) as references. The interfaces follow Intel's [EHCI specification](https://www.intel.com/content/www/us/en/products/docs/io/universal-serial-bus/ehci-specification.html) and USB-IF's [Bulk-Only Transport specification](https://www.usb.org/document-library/mass-storage-bulk-only-10). |
 | PS/2, framebuffer, and guest power | DDOS drivers and QEMU integration. The PS/2 packet handling was informed by [Linux psmouse](https://github.com/torvalds/linux/blob/master/drivers/input/mouse/psmouse-base.c) and [FreeBSD psm](https://github.com/freebsd/freebsd-src/blob/main/sys/dev/atkbdc/psm.c). The QEMU launcher uses [firmware configuration](https://www.qemu.org/docs/master/specs/fw_cfg.html), and guest shutdown uses [QEMU's PIIX4 ACPI controller](https://github.com/qemu/qemu/blob/master/hw/acpi/piix4.c). |
 | Native ABI, pipes, and local sockets | DDOS runtime with a subset of the Linux i386 syscall ABI for musl. The named-pipe namespace follows Windows naming and the interface split was informed by [Wine](https://github.com/wine-mirror/wine/blob/master/server/named_pipe.c). DDOS implements its own queues and local socket adapter. |
 | C libraries | The small freestanding library in `user/` is DDOS code. The optional static libc is [upstream musl](https://git.musl-libc.org/git/musl/) with a local i386 TLS selector adjustment for Ring 2. |
 | BusyBox and runit | Upstream [BusyBox](https://busybox.net/) supplies Hush and its configured applets. Upstream [runit](https://github.com/g-pape/runit) is cross-built by DDOS. The applet configuration, stage scripts, shell service, and image integration are local. |
 | Graphics server and window manager | [Microwindows](https://github.com/ghaerr/microwindows) supplies Nano-X and the floating NanoWM. DDOS provides its input adapters, build configuration, desktop startup, and blue window colors. |
-| App menu, taskbar, Calculator, Settings, Task Manager, and icons | Original DDOS desktop components. Their blue tonal palette uses [Material 3 color roles](https://m3.material.io/styles/color/the-color-system). The layered tint and highlights adapt [Apple HIG materials guidance](https://developer.apple.com/design/human-interface-guidelines/materials) to Nano-X drawing. |
+| App menu, taskbar, Calculator, Settings, Task Manager, File Manager, and icons | Original DDOS desktop components. Their blue tonal palette uses [Material 3 color roles](https://m3.material.io/styles/color/the-color-system). The layered tint and highlights adapt [Apple HIG materials guidance](https://developer.apple.com/design/human-interface-guidelines/materials) to Nano-X drawing. |
 | Console typeface | Public-domain [font8x8](https://github.com/dhepper/font8x8), included in the graphics console. |
 | Toolchain and emulation | Python build and boot wrappers are DDOS code. Clang, LLD, NASM, QEMU, and EDK II/OVMF are external tools or firmware. |
 

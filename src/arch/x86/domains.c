@@ -7,7 +7,7 @@
 #include "console.h"
 
 enum {
-    PAGE = 4096, ENTRIES = PAGE / sizeof(uint32_t), KERNEL_BYTES = 0x10000,
+    PAGE = 4096, ENTRIES = PAGE / sizeof(uint32_t), KERNEL_BYTES = 0x20000,
     DOMAIN_CODE = 0xc0000000u, DOMAIN_DATA = DOMAIN_CODE + PAGE,
     PRESENT = 1, WRITABLE = 2,
     RING1_CODE = 0x30, RING1_DATA = 0x38, RING2_CODE = 0x40, RING2_DATA = 0x48,
@@ -80,7 +80,7 @@ void x86_native_configure(uint32_t arena_offset)
     native_memory = (uint8_t *)(uintptr_t)arena_offset;
 }
 
-static uint32_t physical(const void *offset)
+uint32_t x86_physical_address(const void *offset)
 {
     return physical_base + (uint32_t)(uintptr_t)offset;
 }
@@ -95,6 +95,8 @@ static void descriptor(uint8_t *slot, uint32_t base, unsigned limit,
     slot[6] = flags | (limit >> 16);
     slot[7] = base >> 24;
 }
+
+extern uint8_t domain_timer[];
 
 static void gate(unsigned vector, const uint8_t *entry, unsigned attributes)
 {
@@ -131,9 +133,9 @@ static bool prepare_descriptors(void)
     for (unsigned i = TSS_BYTES; i < sizeof(tss); ++i)
         tss[i] = 0xff;
     x86_domain_gdtr.limit = GDT_BYTES - 1;
-    x86_domain_gdtr.base = physical(domain_gdt);
+    x86_domain_gdtr.base = x86_physical_address(domain_gdt);
     x86_domain_idtr.limit = sizeof(domain_idt) - 1;
-    x86_domain_idtr.base = physical(domain_idt);
+    x86_domain_idtr.base = x86_physical_address(domain_idt);
     for (unsigned vector = 0; vector < IDT_ENTRIES; ++vector)
         gate(vector, domain_fatal, 0x8e);
     gate(0, domain_bad, 0x8e);
@@ -149,6 +151,7 @@ static bool prepare_descriptors(void)
     gate(17, domain_bad_error, 0x8e);
     gate(13, domain_gp, 0x8e);
     gate(14, domain_pf, 0x8e);
+    gate(0x20, domain_timer, 0x8e);
     gate(0x80, domain_syscall, 0xce);
     return true;
 }
@@ -165,7 +168,7 @@ static bool build_address_spaces(void)
             memory->domain_tables[d][i] = 0;
         }
     }
-    uint32_t bridge[] = {physical(__domain_bridge_start), physical(__domain_stack_top) - PAGE};
+    uint32_t bridge[] = {x86_physical_address(__domain_bridge_start), x86_physical_address(__domain_stack_top) - PAGE};
     for (unsigned i = 0; i < sizeof(bridge) / sizeof(bridge[0]); ++i) {
         uint32_t address = bridge[i];
         unsigned table = (address >> 22) - (physical_base >> 22);
@@ -173,13 +176,13 @@ static bool build_address_spaces(void)
         memory->kernel_tables[table][entry] = address | PRESENT | (i == 1 ? WRITABLE : 0);
         for (unsigned d = 0; d < 2; ++d)
             memory->directories[d][address >> 22] =
-                physical(memory->kernel_tables[table]) | PRESENT | WRITABLE;
+                x86_physical_address(memory->kernel_tables[table]) | PRESENT | WRITABLE;
     }
     for (unsigned d = 0; d < 2; ++d) {
         memory->directories[d][DOMAIN_CODE >> 22] =
-            physical(memory->domain_tables[d]) | PRESENT | WRITABLE;
-        memory->domain_tables[d][0] = physical(memory->code[d]) | PRESENT;
-        memory->domain_tables[d][1] = physical(memory->data[d]) | PRESENT | WRITABLE;
+            x86_physical_address(memory->domain_tables[d]) | PRESENT | WRITABLE;
+        memory->domain_tables[d][0] = x86_physical_address(memory->code[d]) | PRESENT;
+        memory->domain_tables[d][1] = x86_physical_address(memory->data[d]) | PRESENT | WRITABLE;
         for (unsigned i = 0; i < PAGE; ++i) {
             memory->code[d][i] = i < bytes ? x86_payload_start[i] : 0xf4;
             memory->data[d][i] = 0;
@@ -193,7 +196,7 @@ static void prepare_entry(unsigned ring)
     uint8_t *trap_stack = (uint8_t *)((uintptr_t)__domain_stack_top - PAGE);
     for (unsigned i = 0; i < PAGE; ++i)
         trap_stack[i] = 0;
-    descriptor(domain_gdt + TSS_SELECTOR, physical(tss), sizeof(tss) - 1, 0x89, 0);
+    descriptor(domain_gdt + TSS_SELECTOR, x86_physical_address(tss), sizeof(tss) - 1, 0x89, 0);
     tss[TSS_BYTES + PROBE_PORT / 8] =
         ring == 1 ? (uint8_t)~(1u << (PROBE_PORT % 8)) : 0xff;
 }
@@ -206,7 +209,7 @@ static uint32_t run(unsigned ring, const uint8_t *entry, uint32_t argument)
         .ss = (ring == 1 ? RING1_DATA : RING2_DATA) | ring,
     };
     prepare_entry(ring);
-    return x86_enter_domain(physical(memory->directories[ring - 1]), 0, &frame);
+    return x86_enter_domain(x86_physical_address(memory->directories[ring - 1]), 0, &frame);
 }
 
 void native_fb_configure(uint32_t base, uint32_t width, uint32_t height,
@@ -276,7 +279,7 @@ uint32_t native_step(struct native_space *app)
                tls_flags == 0xc0 ? app->tls_limit >> 12 : app->tls_limit, 0xd3, tls_flags);
     for (unsigned slot = 0; slot < NATIVE_PAGES; ++slot) {
         unsigned access = app->access[slot];
-        memory->domain_tables[1][slot] = access ? physical(app->image + slot * PAGE) | access : 0;
+        memory->domain_tables[1][slot] = access ? x86_physical_address(app->image + slot * PAGE) | access : 0;
     }
     for (unsigned slot = NATIVE_PAGES; slot < ENTRIES; ++slot) {
         uint32_t offset = (slot - NATIVE_PAGES) * PAGE;
@@ -295,12 +298,14 @@ uint32_t native_step(struct native_space *app)
             pages[i] = offset < framebuffer.size ?
                 (framebuffer.physical + offset) | app->fb_access | 0x18 : 0;
         }
-        *directory = physical(pages) | PRESENT | WRITABLE;
+        *directory = x86_physical_address(pages) | PRESENT | WRITABLE;
     }
     prepare_entry(2);
     if (sse)
         x86_restore_fpu(app->fpu);
-    uint32_t event = x86_enter_domain(physical(memory->directories[1]), 1, &app->frame);
+    native_clock_domain(true);
+    uint32_t event = x86_enter_domain(x86_physical_address(memory->directories[1]), 1, &app->frame);
+    native_clock_domain(false);
     if (sse)
         x86_save_fpu(app->fpu);
     return event;
@@ -332,10 +337,10 @@ void x86_domains_test(void)
     bool guard = unreachable == PF || unreachable == GP;
     uint32_t kernel = run(2, x86_user_kernel_offset, physical_base - DOMAIN_DATA);
     uint32_t kernel_data = run(2, x86_user_kernel_offset,
-                               physical(&kernel_read_probe) - DOMAIN_DATA);
+                               x86_physical_address(&kernel_read_probe) - DOMAIN_DATA);
     write_probe = 0x1960;
     uint32_t bridge = run(2, x86_user_bridge_write,
-                          physical((const void *)&write_probe) - DOMAIN_DATA);
+                          x86_physical_address((const void *)&write_probe) - DOMAIN_DATA);
     bool kernel_memory = (kernel == GP || kernel == PF) &&
                          (kernel_data == GP || kernel_data == PF) &&
                          (bridge == GP || bridge == PF) && write_probe == 0x1960;

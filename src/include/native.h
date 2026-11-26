@@ -8,7 +8,7 @@ enum {
     NATIVE_PAGE = 4096, NATIVE_PAGES = 256,
     NATIVE_FB_OFFSET = NATIVE_PAGES * NATIVE_PAGE,
     NATIVE_FB_MAX = 8 * 1024 * 1024,
-    NATIVE_TRAP = 0x40000000,
+    NATIVE_TRAP = 0x40000000, NATIVE_TIMER = 0x40000001,
 };
 
 /* Matches PUSHAD followed by the inter-privilege IRET frame. */
@@ -44,6 +44,8 @@ void native_commit(struct native_space *, uint32_t base, uint32_t size);
 bool native_load_elf(struct native_space *, const struct ext2_inode *, struct native_elf *);
 uint32_t native_step(struct native_space *);
 void native_clock_start(void);
+void native_clock_stop(void);
+void native_clock_domain(bool entering);
 uint32_t native_millis(void);
 uint32_t native_epoch(void);
 void native_desktop(uint32_t directory, const char *app);

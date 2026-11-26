@@ -5,7 +5,7 @@
 
 enum {
     DDOS_GET_STATUS = 0x444f, DDOS_DESKTOP_POWER = 0x4450,
-    DDOS_POWER_OFF = 1, DDOS_RESTART = 2, DDOS_STATUS_TASKS = 8,
+    DDOS_POWER_OFF = 1, DDOS_RESTART = 2, DDOS_STATUS_TASKS = 24,
 };
 
 struct ddos_desktop_task {

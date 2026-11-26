@@ -10,7 +10,7 @@ static unsigned selected;
 static uint16_t io = 0x1f0, alt = 0x3f6;
 static uint8_t device_head = 0xf0;
 
-void ata_select(unsigned device)
+static void ata_select(unsigned device)
 {
     selected = device;
     io = device ? 0x170 : 0x1f0;
@@ -66,7 +66,7 @@ static bool wait_for(uint8_t set, uint8_t clear, bool check_errors)
     return false;
 }
 
-uint32_t ata_probe(void)
+static uint32_t ata_probe(void)
 {
     capacity = 0;
     out8(io + DRIVE, device_head & ~0x40);
@@ -115,7 +115,7 @@ static bool transfer(uint32_t lba, uint8_t command)
     return wait_for(DRQ, 0, true);
 }
 
-bool ata_read(uint32_t lba, void *buffer)
+static bool ata_read(uint32_t lba, void *buffer)
 {
     if (!transfer(lba, 0x20))
         return false;
@@ -128,7 +128,7 @@ bool ata_read(uint32_t lba, void *buffer)
     return wait_for(READY, DRQ, true);
 }
 
-bool ata_write(uint32_t lba, const void *buffer)
+static bool ata_write(uint32_t lba, const void *buffer)
 {
     if (!transfer(lba, 0x30))
         return false;
@@ -138,11 +138,36 @@ bool ata_write(uint32_t lba, const void *buffer)
     return wait_for(READY, DRQ, true);
 }
 
-bool ata_flush(void)
+static bool ata_flush(void)
 {
     if (!capacity || !wait_for(READY, DRQ, true))
         return false;
     out8(io + STATUS, 0xe7);
     delay();
     return wait_for(READY, DRQ, true);
+}
+static bool read_sector(unsigned unit, uint32_t lba, void *buffer)
+{
+    ata_select(unit);
+    return ata_read(lba, buffer);
+}
+
+static bool write_sector(unsigned unit, uint32_t lba, const void *buffer)
+{
+    ata_select(unit);
+    return ata_write(lba, buffer);
+}
+
+static bool flush_device(unsigned unit)
+{
+    ata_select(unit);
+    return ata_flush();
+}
+
+bool ata_block_device(unsigned unit, struct block_device *out)
+{
+    ata_select(unit);
+    uint32_t sectors = ata_probe();
+    *out = (struct block_device){sectors, unit, read_sector, write_sector, flush_device};
+    return sectors != 0;
 }

@@ -4,8 +4,8 @@
 #include <stdint.h>
 
 /* Offsets from the base of the kernel's preallocated memory. */
-#define DDOS_HANDOFF_OFFSET 0x10000u
-#define DDOS_DISK_OFFSET    0x30000u
+#define DDOS_HANDOFF_OFFSET 0x1e000u
+#define DDOS_DISK_OFFSET    0x41000u
 
 struct uefi_handoff {
     uint32_t framebuffer;

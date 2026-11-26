@@ -10,18 +10,20 @@
 
 enum {
     ENOENT = 2, EIO = 5, ENOEXEC = 8, EBADF = 9, ENOMEM = 12, EACCES = 13, EFAULT = 14,
+    EBUSY = 16, EXDEV = 18, ENOTEMPTY = 39,
     EEXIST = 17, ENODEV = 19, ENOTDIR = 20, EISDIR = 21, EINVAL = 22, EMFILE = 24,
     ENOSPC = 28, ESPIPE = 29, EROFS = 30, ENAMETOOLONG = 36, ENOSYS = 38,
     EINTR = 4, ESRCH = 3, ECHILD = 10, EAGAIN = 11, EPIPE = 32, ENOTTY = 25, ERANGE = 34,
     AT_FDCWD = -100, FD_COUNT = 16, FILE_COUNT = 64, TASKS = DDOS_X86_NATIVE_TASKS,
     O_CREAT = 0x40, O_EXCL = 0x80, O_TRUNC = 0x200, O_APPEND = 0x400,
     EAFNOSUPPORT = 97, EADDRINUSE = 98, ENOTCONN = 107, ECONNREFUSED = 111,
-    BLOCKED = -4096, RESUMED = -4097, PIPE_COUNT = 8, PIPE_BYTES = 512,
+    BLOCKED = -4096, RESUMED = -4097, PIPE_COUNT = 16, PIPE_BYTES = 512,
     POLLIN = 1, POLLOUT = 4, POLLERR = 8, POLLHUP = 16, POLLNVAL = 32,
     SIGCHLD = 17, SIGCONT = 18, SIGKILL = 9, SIGSTOP = 19, SIGPIPE = 13,
     SA_RESTORER = 0x04000000, SA_RESTART = 0x10000000,
     MOUSE_NODE = 5,
     O_NONBLOCK = 0x800, O_NOCTTY = 0x100, O_LARGEFILE = 0x8000, O_CLOEXEC = 0x80000,
+    O_DIRECTORY = 0x10000, O_NOFOLLOW = 0x20000,
 };
 
 enum task_state { FREE, RUNNABLE, WAIT_CHILD, WAIT_IO, ZOMBIE };
@@ -128,6 +130,7 @@ static int fs_error(enum ext2_result result)
     case EXT2_FULL: return -ENOSPC;
     case EXT2_READ_ONLY: return -EROFS;
     case EXT2_INVALID: return -EINVAL;
+    case EXT2_NOT_EMPTY: return -ENOTEMPTY;
     default: return -EIO;
     }
 }
@@ -387,7 +390,9 @@ static int openat(struct process *p, uint32_t dirfd, uint32_t address, uint32_t 
 {
     if ((int32_t)dirfd != AT_FDCWD)
         return -EBADF;
-    if ((flags & 3) == 3 || flags & ~(3u | O_CREAT | O_EXCL | O_TRUNC | O_APPEND | O_NOCTTY | O_LARGEFILE | O_CLOEXEC | O_NONBLOCK))
+    if ((flags & 3) == 3 || flags & ~(3u | O_CREAT | O_EXCL | O_TRUNC | O_APPEND | O_NOCTTY | O_LARGEFILE | O_CLOEXEC | O_NONBLOCK | O_DIRECTORY | O_NOFOLLOW))
+        return -EINVAL;
+    if ((flags & O_DIRECTORY) && (flags & (3 | O_CREAT | O_TRUNC | O_APPEND)))
         return -EINVAL;
     unsigned number_fd = available_fd(p, 0), slot = available_file();
     if (number_fd == FD_COUNT || slot == FILE_COUNT)
@@ -406,6 +411,8 @@ static int openat(struct process *p, uint32_t dirfd, uint32_t address, uint32_t 
     uint32_t number;
     if (route.volume == VFS_A || route.volume == VFS_DEV || route.volume == VFS_TMP) {
         const char *name = virtual_name(route.name);
+        if (flags & O_DIRECTORY)
+            return -ENOTDIR;
         if (!*name)
             return -EISDIR;
         if (route.volume == VFS_A)
@@ -454,8 +461,12 @@ static int openat(struct process *p, uint32_t dirfd, uint32_t address, uint32_t 
         }
         if (result != EXT2_OK)
             return fs_error(result);
-        if (inode.kind != EXT2_REGULAR)
-            return inode.kind == EXT2_DIRECTORY ? -EISDIR : -EACCES;
+        if (inode.kind == EXT2_DIRECTORY && (flags & (3 | O_CREAT | O_TRUNC | O_APPEND)))
+            return -EISDIR;
+        if ((flags & O_DIRECTORY) && inode.kind != EXT2_DIRECTORY)
+            return -ENOTDIR;
+        if (inode.kind != EXT2_REGULAR && inode.kind != EXT2_DIRECTORY)
+            return -EACCES;
         if ((flags & 3) || (flags & O_TRUNC)) {
             if (!ext2_writable())
                 return -EROFS;
@@ -527,6 +538,8 @@ static int io_read(struct process *p, uint32_t number, uint32_t address, uint32_
     struct ext2_inode inode;
     if (!ext2_get_inode(file->inode, &inode))
         return -EIO;
+    if (inode.kind == EXT2_DIRECTORY)
+        return -EISDIR;
     unsigned done = 0;
     while (done < size) {
         const uint8_t *chunk;
@@ -583,6 +596,10 @@ static int io_write(struct process *p, uint32_t number, uint32_t address, uint32
     }
     vfs_select(file->volume);
     unsigned done = 0;
+    /* Bound synchronous disk work per syscall so other applications get a turn. */
+    unsigned budget = file->volume == VFS_E ? 1024 : 4096;
+    if (size > budget)
+        size = budget;
     while (done < size) {
         struct ext2_inode inode;
         if (!ext2_get_inode(file->inode, &inode))
@@ -696,7 +713,7 @@ static int path_info(struct process *p, struct vfs_path route, struct ext2_inode
 {
     if (!vfs_select(route.volume))
         return -ENODEV;
-    if (route.volume == VFS_B || route.volume == VFS_D) {
+    if (vfs_ext2(route.volume)) {
         enum ext2_result result = ext2_lookup(start_dir(p, route.volume), route.name, info);
         return result == EXT2_OK ? 0 : fs_error(result);
     }
@@ -760,6 +777,104 @@ static int make_directory(struct process *p, const struct native_frame *r)
     if (route.volume == VFS_A)
         return -EROFS;
     enum ext2_result result = ext2_create(start_dir(p, route.volume), route.name, 0, 0, true);
+    return result == EXT2_OK ? 0 : fs_error(result);
+}
+
+static int directory_entries(struct process *p, uint32_t number, uint32_t dest, uint32_t length)
+{
+    struct file *file = fd(p, number);
+    if (!file)
+        return -EBADF;
+    uint8_t *output = user(p, dest, length, true);
+    if (!output)
+        return -EFAULT;
+    if (!vfs_ext2(file->volume) || !vfs_select(file->volume))
+        return -ENOTDIR;
+    struct ext2_inode dir;
+    if (!ext2_get_inode(file->inode, &dir))
+        return -EIO;
+    if (dir.kind != EXT2_DIRECTORY)
+        return -ENOTDIR;
+    unsigned written = 0;
+    for (;;) {
+        uint32_t next = file->position;
+        struct ext2_inode item;
+        char name[256];
+        enum ext2_result result = ext2_next(&dir, &next, name, &item);
+        if (result == EXT2_MISSING)
+            return written;
+        if (result != EXT2_OK)
+            return written ? (int)written : fs_error(result);
+        unsigned bytes = 0;
+        while (name[bytes])
+            ++bytes;
+        unsigned record = (20 + bytes + 7) & ~7u;
+        if (record > length - written)
+            return written ? (int)written : -EINVAL;
+        uint8_t *entry = output + written;
+        zero(entry, record);
+        write32(entry, item.number);
+        write32(entry + 8, next);
+        write16(entry + 16, record);
+        entry[18] = item.kind >> 12;
+        copy(entry + 19, (const uint8_t *)name, bytes);
+        file->position = next;
+        written += record;
+    }
+}
+
+static int change_entry(struct process *p, const struct native_frame *r)
+{
+    unsigned call = r->eax;
+    bool rename = call == 38 || call == 302 || call == 353;
+    bool at = call == 301 || call == 302 || call == 353;
+    bool directory = call == 40 || (call == 301 && r->edx == 0x200);
+    if (at && ((int32_t)r->ebx != AT_FDCWD || (rename && (int32_t)r->edx != AT_FDCWD)))
+        return -EBADF;
+    if ((call == 301 && (r->edx & ~0x200u)) || (call == 353 && (r->edi & ~1u)))
+        return -EINVAL;
+    char name[256];
+    int error = copy_path(p, at ? r->ecx : r->ebx, name);
+    if (error)
+        return error;
+    struct vfs_path src = vfs_resolve(name, p->cwd_volume, true);
+    if (!vfs_select(src.volume))
+        return -ENODEV;
+    if (!vfs_ext2(src.volume) || !ext2_writable())
+        return -EROFS;
+    uint32_t start = start_dir(p, src.volume);
+    enum ext2_result result;
+    if (rename) {
+        char path[256];
+        error = copy_path(p, at ? r->esi : r->ecx, path);
+        if (error)
+            return error;
+        struct vfs_path dest = vfs_resolve(path, p->cwd_volume, true);
+        if (dest.volume != src.volume)
+            return -EXDEV;
+        result = ext2_rename(start, src.name, start, dest.name);
+    } else {
+        struct ext2_inode item;
+        result = ext2_lookup(start, src.name, &item);
+        if (result != EXT2_OK)
+            return fs_error(result);
+        for (unsigned i = 0; i < FILE_COUNT; ++i) {
+            struct file *file = &runtime->files[i];
+            if (file->refs && file->volume == src.volume && file->inode == item.number)
+                return -EBUSY;
+        }
+        if (directory) {
+            for (unsigned i = 0; i < TASKS; ++i) {
+                struct process *task = &runtime->tasks[i];
+                if (task->state != FREE && task->state != ZOMBIE &&
+                    task->cwd_volume == src.volume && task->cwd == item.number)
+                    return -EBUSY;
+            }
+        }
+        result = ext2_remove(start, src.name, directory);
+        if (result == EXT2_WRONG_TYPE)
+            return directory ? -ENOTDIR : -EISDIR;
+    }
     return result == EXT2_OK ? 0 : fs_error(result);
 }
 
@@ -883,7 +998,7 @@ static int exec_image(struct process *p, const char *path, uint32_t argv, uint32
     int error = path_info(p, route, &info);
     if (error)
         return error;
-    if ((route.volume != VFS_B && route.volume != VFS_D) || !(info.mode & 0111))
+    if (!vfs_ext2(route.volume) || !(info.mode & 0111))
         return -EACCES;
     struct exec_stack stack;
     stack.cursor = sizeof(stack.bytes);
@@ -1634,6 +1749,8 @@ static int syscall(struct process *p)
     case 64: return p->parent;
     case 114: return wait_child(p);
     case 39: case 296: return make_directory(p, r);
+    case 10: case 38: case 40: case 301: case 302: case 353: return change_entry(p, r);
+    case 220: return directory_entries(p, r->ebx, r->ecx, r->edx);
     case 45: return set_brk(p, r->ebx);
     case 42: return make_pipe(p, r->ebx, 0);
     case 331: return make_pipe(p, r->ebx, r->ecx);
@@ -1695,7 +1812,7 @@ static int syscall(struct process *p)
         struct file *file = fd(p, r->ebx);
         if (!file)
             return -EBADF;
-        if (file->volume == VFS_B || file->volume == VFS_D) {
+        if (vfs_ext2(file->volume)) {
             vfs_select(file->volume);
             if (!ext2_get_inode(file->inode, &info))
                 return -EIO;
@@ -1895,6 +2012,10 @@ static void native_session(uint32_t directory, const char *path, bool quiet, boo
         }
         struct native_frame *frame = &p->space.frame;
         uint32_t event = native_step(&p->space);
+        if (event == NATIVE_TIMER) {
+            slot = (slot + 1) % TASKS;
+            continue;
+        }
         if (event != NATIVE_TRAP) {
             if (!slot) {
                 print("Native program fault ");
@@ -1919,6 +2040,7 @@ static void native_session(uint32_t directory, const char *path, bool quiet, boo
 void native_start(uint32_t directory, const char *path, bool quiet)
 {
     native_session(directory, path, quiet, false, 0);
+    native_clock_stop();
 }
 
 void native_desktop(uint32_t directory, const char *app)
@@ -1929,5 +2051,6 @@ void native_desktop(uint32_t directory, const char *app)
     }
     print("Starting NanoWM. Press Esc to return to DDOS.\r\n");
     native_session(directory, "/bin/nano-X", false, true, app);
+    native_clock_stop();
     platform_clear();
 }

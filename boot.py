@@ -54,6 +54,7 @@ def main():
     parser.add_argument("--calculator", action="store_true", help="boot UEFI and open the calculator")
     parser.add_argument("--debug-log", type=Path, help="write guest debug console output to a file")
     parser.add_argument("--system-image", type=Path, default=SYSTEM, help="ext2 system image to boot")
+    parser.add_argument("--usb-image", type=Path, help="attach a raw image as a USB 2.0 storage device")
     args = parser.parse_args()
     args.uefi |= args.calculator
     startup = ("-fw_cfg", "name=opt/ddos/calculator,string=1") if args.calculator else ()
@@ -70,6 +71,15 @@ def main():
     data_disk = ()
     if (ROOT / DATA).is_file():
         data_disk = ("-drive", f"file={DATA.as_posix()},format=raw,if=ide,index=1")
+    usb = ()
+    if args.usb_image:
+        image = args.usb_image.resolve()
+        if not image.is_file():
+            parser.error(f"USB disk image was not found: {image}")
+        option = image.as_posix().replace(",", ",,")
+        usb = ("-device", "usb-ehci,id=ddos_usb", "-drive",
+               f"file={option},format=raw,if=none,id=ddos_usb_disk",
+               "-device", "usb-storage,bus=ddos_usb.0,drive=ddos_usb_disk")
     try:
         with tempfile.TemporaryDirectory(prefix="ddos-qemu-") as scratch:
             scratch = Path(scratch)
@@ -102,7 +112,7 @@ def main():
                 boot_option = boot_image.as_posix().replace(",", ",,")
                 command = (qemu, "-drive", f"file={boot_option},format=raw,if=floppy",
                            "-boot", "a", *data_disk, *debug)
-            return subprocess.run(command, cwd=ROOT).returncode
+            return subprocess.run((*command, *usb), cwd=ROOT).returncode
     except OSError as error:
         raise SystemExit(f"Could not launch QEMU: {error}") from error
 

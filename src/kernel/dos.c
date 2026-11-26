@@ -6,7 +6,7 @@
 #include "vfs.h"
 #include "platform.h"
 
-enum { PROGRAM_LIMIT = 0xff00 - 0x100, LOAD_OFFSET = 0x100, LOAD_SEGMENT = 0x2010 };
+enum { PROGRAM_LIMIT = 0xff00 - 0x100, LOAD_OFFSET = 0x100, LOAD_SEGMENT = 0x3010 };
 
 static uint8_t psp[256];
 
@@ -140,7 +140,7 @@ bool dos_run(const char *name, const char *arguments, uint32_t directory)
         print("DOS execution requires a BIOS boot\r\n");
         return true;
     }
-    uint32_t entry = 0x20000100, stack = 0x2000fffc;
+    uint32_t entry = 0x30000100, stack = 0x3000fffc;
     if (mz ? !mz_load(&file, &entry, &stack) :
              (!file.size || file.size > PROGRAM_LIMIT || !read_program(&file, 0, file.size))) {
         print("Invalid or unreadable DOS executable\r\n");

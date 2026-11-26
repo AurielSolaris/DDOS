@@ -8,10 +8,10 @@
 #include "x86_domains.h"
 
 static char drive;
-static uint32_t directories[] = {EXT2_ROOT, EXT2_ROOT};
-static char paths[2][256] = {"/", "/"};
-#define directory_for(letter) directories[(letter) == 'B']
-#define path_for(letter) paths[(letter) == 'B']
+static uint32_t directories[] = {EXT2_ROOT, EXT2_ROOT, EXT2_ROOT, EXT2_ROOT, EXT2_ROOT};
+static char paths[5][256] = {"/", "/", "/", "/", "/"};
+#define directory_for(letter) directories[(letter) - 'A']
+#define path_for(letter) paths[(letter) - 'A']
 static unsigned listed;
 
 static char upper(char letter)
@@ -268,15 +268,51 @@ static void create(const char *path, const char *text, bool directory)
     report(ext2_create(directory_for(selected), path, (const uint8_t *)text, size, directory));
 }
 
+static void remove_entry(const char *path, bool directory)
+{
+    char selected = path_drive(&path);
+    if (!available(selected) || selected == 'A')
+        return;
+    struct ext2_inode item;
+    if (directory && ext2_lookup(directory_for(selected), path, &item) == EXT2_OK &&
+        item.number == directory_for(selected)) {
+        print("Directory is in use\\r\\n");
+        return;
+    }
+    report(ext2_remove(directory_for(selected), path, directory));
+}
+
+static void rename_entry(char *old)
+{
+    const char *name = next_word(old);
+    const char *from = old;
+    char source = path_drive(&from), dest = source;
+    if (*name && name[1] == ':') {
+        struct vfs_path route = vfs_resolve(name, source - 'A', false);
+        dest = 'A' + route.volume;
+        name = route.name;
+    }
+    if (source != dest) {
+        print("Rename requires the same drive\\r\\n");
+        return;
+    }
+    if (!available(source) || source == 'A')
+        return;
+    report(ext2_rename(directory_for(source), from, directory_for(dest), name));
+}
+
 static void help(void)
 {
     print("Files\r\n"
           "  LS [path]          List a directory (also DIR)\r\n"
           "  CD <path>          Change directory\r\n"
           "  MKDIR <path>       Create a directory on ext2\r\n"
+          "  DEL <file>         Delete a file on ext2\r\n"
+          "  RMDIR <path>       Remove an empty directory\r\n"
+          "  REN <old> <new>    Rename within the same drive\r\n"
           "  TYPE <file>        Display a text file\r\n"
           "  WRITE <file> text  Create a text file on ext2\r\n"
-          "  A:, B:, D:         Select boot, system, or data volume\r\n"
+          "  A:, B:, D:, E:     Select boot, system, data, or USB volume\r\n"
           "System\r\n"
           "  CLS                Clear the screen\r\n"
           "  ECHO [text]        Print text\r\n"
@@ -331,11 +367,15 @@ static void command(char *line)
         type(arguments);
     } else if (equals(line, "MKDIR")) {
         create(arguments, "", true);
+    } else if (equals(line, "DEL") || equals(line, "RMDIR")) {
+        remove_entry(arguments, equals(line, "RMDIR"));
+    } else if (equals(line, "REN")) {
+        rename_entry(arguments);
     } else if (equals(line, "WRITE")) {
         char *text = next_word(arguments);
         create(arguments, text, false);
     } else if (line[1] == ':' && !line[2] &&
-               upper(line[0]) >= 'A' && upper(line[0]) <= 'D') {
+               upper(line[0]) >= 'A' && upper(line[0]) <= 'E') {
         cd(line);
     } else {
         const char *program = line;

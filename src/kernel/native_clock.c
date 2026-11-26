@@ -1,8 +1,11 @@
 #include "native.h"
+#include "platform.h"
 
 enum { SPEAKER = 0x61, PIT_MODE = 0x43, PIT_CHANNEL2 = 0x42, TICKS_PER_MS = 1193 };
 
 static uint16_t previous, remainder;
+static uint8_t master_mask, slave_mask;
+static bool timer_live, bios_clock;
 static uint32_t elapsed, epoch;
 
 static void outb(uint16_t port, uint8_t value)
@@ -82,8 +85,51 @@ uint32_t native_epoch(void)
     return epoch;
 }
 
+static void pic_setup(uint8_t master, uint8_t slave, uint8_t mask1, uint8_t mask2)
+{
+    outb(0x20, 0x11);
+    outb(0xa0, 0x11);
+    outb(0x21, master);
+    outb(0xa1, slave);
+    outb(0x21, 4);
+    outb(0xa1, 2);
+    outb(0x21, 1);
+    outb(0xa1, 1);
+    outb(0x21, mask1);
+    outb(0xa1, mask2);
+}
+
+void native_clock_stop(void)
+{
+    if (!timer_live)
+        return;
+    timer_live = false;
+    outb(PIT_MODE, 0x36);
+    outb(0x40, 0);
+    outb(0x40, 0);
+    if (!bios_clock)
+        pic_setup(0x08, 0x70, master_mask, slave_mask);
+}
+
+void native_clock_domain(bool entering)
+{
+    if (bios_clock)
+        pic_setup(entering ? 0x20 : 0x08, entering ? 0x28 : 0x70,
+                  entering ? 0xfe : master_mask, entering ? 0xff : slave_mask);
+}
+
 void native_clock_start(void)
 {
+    master_mask = inb(0x21);
+    slave_mask = inb(0xa1);
+    bios_clock = platform_can_run();
+    if (!bios_clock)
+        pic_setup(0x20, 0x28, 0xfe, 0xff);
+    outb(PIT_MODE, 0x34);
+    unsigned quantum = 10 * TICKS_PER_MS;
+    outb(0x40, quantum);
+    outb(0x40, quantum >> 8);
+    timer_live = true;
     epoch = rtc_epoch();
     unsigned gate = inb(SPEAKER) & ~3u;
     outb(SPEAKER, gate);

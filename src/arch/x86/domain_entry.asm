@@ -64,6 +64,7 @@ x86_restore_fpu:
     ret
 
 section .domain_bridge progbits alloc exec nowrite align=16
+global domain_timer
 global x86_enter_domain, domain_syscall, domain_gp, domain_pf, domain_ud, domain_bad, domain_bad_error, domain_fatal
 extern x86_domain_gdtr, x86_domain_idtr, __domain_stack_top
 
@@ -103,6 +104,10 @@ x86_enter_domain:
     mov eax, [esi + 40]
     and eax, 0x0cd5           ; Do not restore privileged EFLAGS bits.
     or eax, 2
+    cmp dword [service_mode], 0
+    je .flags
+    or eax, 1 << 9
+.flags:
     push eax
     push dword [esi + 36]
     push dword [esi + 32]
@@ -147,8 +152,17 @@ domain_syscall:
     mov eax, ebx
     jmp domain_return
 
+domain_timer:
+    pushad
+    mov al, 0x20
+    out 0x20, al
+    mov ebx, 0x40000001
+    jmp native_save_frame
+
 native_syscall:
     pushad
+    mov ebx, 0x40000000
+native_save_frame:
     mov esi, esp
     xor eax, eax
     mov ax, fs
@@ -168,7 +182,7 @@ native_syscall:
     mov [edi + 4], eax
     pop eax
     mov [edi], eax
-    mov eax, 0x40000000
+    mov eax, ebx
     jmp domain_return
 
 domain_bad:

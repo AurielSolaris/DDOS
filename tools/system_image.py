@@ -136,12 +136,12 @@ def build_system(output, app, files, busybox, runit=None, microwindows=None):
         programs.update(busybox=data, sh=data)
     for source, names in (
         (runit, ("runit", "runit-init", "runsvdir", "runsv", "sv")),
-        (microwindows, ("nano-X", "nanowm", "taskbar", "calculator", "settings", "task_mgr")),
+        (microwindows, ("nano-X", "nanowm", "taskbar", "calculator", "settings", "task_mgr", "file_manager")),
     ):
         if source:
             for name in names:
                 path = source / name
-                if name not in ("nano-X", "taskbar", "calculator", "settings", "task_mgr") or path.is_file():
+                if name not in ("nano-X", "taskbar", "calculator", "settings", "task_mgr", "file_manager") or path.is_file():
                     programs[name] = static_i386(path)
     for path in files:
         name = path.name

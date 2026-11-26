@@ -2,6 +2,7 @@
 #define DDOS_EXT2_INTERNAL_H
 
 #include "ext2.h"
+#include "block.h"
 
 enum {
     MAX_BLOCK = 4096,
@@ -12,6 +13,7 @@ enum {
 };
 
 struct ext2_mount_state {
+    const struct block_device *device;
     uint32_t block_size, blocks, inodes, first_block, blocks_per_group;
     uint32_t inodes_per_group, inode_size, groups;
     bool mounted, filetype, writable;

@@ -6,8 +6,8 @@ extern dos_files_begin, dos_file_interrupt, x86_domains_configure, x86_native_co
 
 KERNEL_BASE equ 0x10000
 KERNEL_SEGMENT equ KERNEL_BASE >> 4
-PROGRAM_SEGMENT equ 0x2000
-DOMAIN_ARENA_OFFSET equ 0x20000
+PROGRAM_SEGMENT equ 0x3000
+DOMAIN_ARENA_OFFSET equ 0x30000
 CODE32 equ 0x08
 DATA32 equ 0x10
 CODE16 equ 0x18
@@ -40,7 +40,7 @@ _start:
     int 0x15
     pop ds
     jc .no_extended
-    cmp ax, 9248
+    cmp ax, 25672              ; 25 one-MiB images plus 72 KiB of metadata.
     jb .no_extended
     mov byte [extended_available], 1
 .no_extended:
@@ -418,7 +418,7 @@ gdt:
     dq 0x00cf92010000ffff
     dq 0x00009a010000ffff
     dq 0x000092010000ffff
-    dq 0x004092020000ffff
+    dq 0x004092030000ffff
 gdt_end:
 gdtr:
     dw gdt_end - gdt - 1
