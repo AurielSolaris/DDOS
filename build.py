@@ -42,6 +42,7 @@ def make_boot_image(boot, kernel):
 
 
 KERNEL_COMPONENTS = {
+    "power": "src/arch/x86/power.c",
     "ata": "src/drivers/ata.c",
     "ext2-read": "src/fs/ext2/read.c",
     "ext2-write": "src/fs/ext2/write.c",
@@ -75,7 +76,8 @@ def build_uefi(objects):
     esp.mkdir(parents=True, exist_ok=True)
     run("nasm", "-f", "elf32", "src/boot/uefi/entry.asm", "-o", "build/uefi-entry.o")
     run("clang", *KERNEL_FLAGS, "-Isrc/drivers/video", "-c", "src/boot/uefi/platform.c", "-o", "build/uefi-platform.o")
-    run("ld.lld", "-m", "elf_i386", "-T", "src/arch/x86/kernel.ld", "build/uefi-entry.o",
+    run("clang", *KERNEL_FLAGS, "-Oz", "-c", "src/drivers/ps2.c", "-o", "build/ps2.o")
+    run("ld.lld", "-m", "elf_i386", "-T", "src/arch/x86/kernel.ld", "build/uefi-entry.o", "build/ps2.o",
         "build/uefi-platform.o", *objects,
         "-o", "build/uefi-kernel.elf")
     run("llvm-objcopy", "-O", "binary", "build/uefi-kernel.elf", "build/uefi-kernel.bin")
@@ -122,7 +124,7 @@ def main():
         args.microwindows = BUILD / "microwindows"
     if args.desktop and (args.microwindows is None or
                          any(not (args.microwindows / name).is_file()
-                             for name in ("nano-X", "nanowm", "taskbar"))):
+                             for name in ("nano-X", "nanowm", "taskbar", "calculator", "settings", "task_mgr"))):
         parser.error("Desktop binaries are missing. Run sh tools/build-microwindows.sh or pass --microwindows.")
     if args.system_image.resolve() in (BUILD / "data.ext2", BUILD / "ddos.img"):
         parser.error("--system-image must be separate from the persistent data and boot images")

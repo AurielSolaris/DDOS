@@ -23,15 +23,29 @@ python build.py --desktop
 python boot.py --uefi
 ```
 
-At the DDOS prompt, enter `NANOWM`. DDOS starts Nano-X and launches
-NanoWM and the taskbar once the server is listening. The bottom bar shows
-the date and time in UTC from the PC clock. Press Esc to return to the
-prompt. Desktop keyboard and mouse input and automatic login startup
-are pending. Add `--debug-log build/qemu.log`
-to the boot command to capture guest diagnostics. The launcher copies the
-system image into its temporary directory so you can rebuild while QEMU
-runs. If an older VM holds the original file open, pass the same
-`--system-image build/system-desktop.ext2` option to both scripts.
+At the DDOS prompt, enter `NANOWM`. Click the **DDOS** button at the left
+of the taskbar to open the app menu. Type a search and press Enter to open
+the selected result, or click any visible result. Tab cycles through
+matches. Calculator, Settings, and Task Manager also have desktop icons.
+**Restart** and **Shutdown** are available at the bottom of the popup on
+the default QEMU PC. Esc returns to the DDOS prompt.
+
+Settings shows firmware, display, and installed guest RAM information.
+Task Manager refreshes every second and reports mapped RAM per native
+process and for the 8 MiB task arena, alongside QEMU's installed RAM.
+Both apps have NanoWM title bars so they can be moved or closed.
+
+Press F2 to open Calculator or bring its window forward. Type `CALC`
+from the DDOS prompt, or use `python boot.py --calculator` to open it
+directly. Calculator supports mouse input and the number and operator
+keys. Enter evaluates, Backspace deletes, N changes the sign, C clears,
+and Q closes Calculator.
+
+The taskbar displays date and time in UTC from the PC clock. Add
+`--debug-log build/qemu.log` to the boot command to capture guest
+diagnostics. QEMU uses a temporary copy of the system image, so the build
+can replace it while the VM runs. If an older VM holds the original file
+open, pass `--system-image build/system-desktop.ext2` to both scripts.
 
 The QEMU launcher attaches three images. The x64 UEFI boot file is
 built at `build/uefi/EFI/BOOT/BOOTX64.EFI`. The kernel exposes a four-letter
@@ -64,7 +78,8 @@ The DDOS shell starts on `D:/` when the data volume mounts.
 Use drive-qualified paths with forward slashes, such as `D:/documents` or
 `B:/bin`. The prompt displays the current directory in this format.
 The shell accepts backslashes in existing DOS paths as well.
-`HELP` lists the current commands with their syntax.
+`HELP` lists the current commands with their syntax. Use `SHUTDOWN`
+to power off or `REBOOT` to restart the default QEMU PC, on BIOS or UEFI.
 
 ```text
 mkdir D:/documents
@@ -211,8 +226,8 @@ in `B:/bin`. Use `--busybox FILE`, `--runit DIR`, or `--microwindows DIR`
 to use explicitly supplied binaries. BusyBox provides `busybox` and
 `sh` with the [Hush and applet configuration](tools/busybox.config).
 The runit tools are `runit`, `runit-init`, `runsvdir`, `runsv`, and `sv`.
-The graphics build provides separate `nano-X`, `nanowm`, and
-`taskbar` binaries.
+The graphics build installs `nano-X`, `nanowm`, `taskbar`, `calculator`,
+`settings`, and `task_mgr`.
 
 The native loader also accepts scripts whose shebang names an absolute
 ELF interpreter path. The image includes executable runit stages in
@@ -283,8 +298,15 @@ real-mode bridge. The UEFI console writes pixels directly to the GOP
 framebuffer and polls a PS/2 keyboard. Native programs can use
 `/dev/console` or `/dev/tty` for console I/O. `/dev/fb0` supports Linux
 `FBIOGET_FSCREENINFO`, `FBIOGET_VSCREENINFO`, and a shared full-device
-mapping for a page-aligned GOP framebuffer of up to 8 MiB. Direct
-keyboard and mouse nodes are pending. The graphics console uses
+mapping for a page-aligned GOP framebuffer of up to 8 MiB. The UEFI
+PS/2 driver separates keyboard and mouse traffic and presents the
+mouse as `/dev/mouse0` when the auxiliary device responds. Reads return
+one three-byte PS/2 report with relative movement and button state.
+The Nano-X driver supports left, right, and middle buttons. See the
+[Linux PS/2 mouse driver](https://github.com/torvalds/linux/blob/master/drivers/input/mouse/psmouse-base.c)
+and [FreeBSD psm driver](https://github.com/freebsd/freebsd-src/blob/main/sys/dev/atkbdc/psm.c).
+
+The graphics console uses
 the public-domain [font8x8 bitmap font](https://github.com/dhepper/font8x8).
 
 ## Toolchain and source layout
@@ -308,7 +330,23 @@ on BIOS. Native applications use the static ELF32 loader.
 | `user` | Native startup code, C library, linker script, and demo |
 | `src/include`, `tools` | Shared interfaces and the host-side ext2 formatter |
 
-The local upstream reference is in `.ref/MS-DOS/v4.0/src`. The Microsoft
-source is published under the MIT License. DDOS currently implements a
-subset of MS-DOS 4.0. Most DOS interrupts, drivers, and utilities remain
-unported.
+## Component provenance
+
+| Component | Origin and DDOS changes |
+| --- | --- |
+| DOS shell, COM/MZ loader, and INT 21h file calls | DDOS C/NASM implementation of a subset of DOS conventions, using the published [Microsoft MS-DOS 4.0 source](https://github.com/microsoft/MS-DOS/tree/main/v4.0) as a local reference. The drive-letter paths, DOS command names, PSP, and interrupt conventions come from DOS. |
+| BIOS boot sector and UEFI boot application | DDOS boot code. BIOS loads the flat kernel from reserved FAT12 sectors. The UEFI application uses the firmware GOP interface, then hands off to the 32-bit kernel. [UEFI specifications](https://uefi.org/specifications). |
+| Kernel, processes, VFS, and system image builder | DDOS implementations in C, NASM, and Python. FAT12, ATA PIO, ext2, and static ELF32 use their underlying formats and interfaces. DDOS combines drive letters with POSIX absolute paths. |
+| PS/2, framebuffer, and guest power | DDOS drivers and QEMU integration. The PS/2 packet handling was informed by [Linux psmouse](https://github.com/torvalds/linux/blob/master/drivers/input/mouse/psmouse-base.c) and [FreeBSD psm](https://github.com/freebsd/freebsd-src/blob/main/sys/dev/atkbdc/psm.c). The QEMU launcher uses [firmware configuration](https://www.qemu.org/docs/master/specs/fw_cfg.html), and guest shutdown uses [QEMU's PIIX4 ACPI controller](https://github.com/qemu/qemu/blob/master/hw/acpi/piix4.c). |
+| Native ABI, pipes, and local sockets | DDOS runtime with a subset of the Linux i386 syscall ABI for musl. The named-pipe namespace follows Windows naming and the interface split was informed by [Wine](https://github.com/wine-mirror/wine/blob/master/server/named_pipe.c). DDOS implements its own queues and local socket adapter. |
+| C libraries | The small freestanding library in `user/` is DDOS code. The optional static libc is [upstream musl](https://git.musl-libc.org/git/musl/) with a local i386 TLS selector adjustment for Ring 2. |
+| BusyBox and runit | Upstream [BusyBox](https://busybox.net/) supplies Hush and its configured applets. Upstream [runit](https://github.com/g-pape/runit) is cross-built by DDOS. The applet configuration, stage scripts, shell service, and image integration are local. |
+| Graphics server and window manager | [Microwindows](https://github.com/ghaerr/microwindows) supplies Nano-X and the floating NanoWM. DDOS provides its input adapters, build configuration, desktop startup, and blue window colors. |
+| App menu, taskbar, Calculator, Settings, Task Manager, and icons | Original DDOS desktop components. Their blue tonal palette uses [Material 3 color roles](https://m3.material.io/styles/color/the-color-system). The layered tint and highlights adapt [Apple HIG materials guidance](https://developer.apple.com/design/human-interface-guidelines/materials) to Nano-X drawing. |
+| Console typeface | Public-domain [font8x8](https://github.com/dhepper/font8x8), included in the graphics console. |
+| Toolchain and emulation | Python build and boot wrappers are DDOS code. Clang, LLD, NASM, QEMU, and EDK II/OVMF are external tools or firmware. |
+
+The repository's [MIT license](LICENSE) covers the DDOS project files as
+described there. Upstream projects retain their own licenses. Reference
+checkouts in `.ref/` and generated binaries and images in `build/` are
+excluded from Git.

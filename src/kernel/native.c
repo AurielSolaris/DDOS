@@ -2,6 +2,7 @@
 
 #include "bytes.h"
 #include "console.h"
+#include "desktop_status.h"
 #include "ext2.h"
 #include "vfs.h"
 #include "x86_domains.h"
@@ -19,6 +20,7 @@ enum {
     POLLIN = 1, POLLOUT = 4, POLLERR = 8, POLLHUP = 16, POLLNVAL = 32,
     SIGCHLD = 17, SIGCONT = 18, SIGKILL = 9, SIGSTOP = 19, SIGPIPE = 13,
     SA_RESTORER = 0x04000000, SA_RESTART = 0x10000000,
+    MOUSE_NODE = 5,
     O_NONBLOCK = 0x800, O_NOCTTY = 0x100, O_LARGEFILE = 0x8000, O_CLOEXEC = 0x80000,
 };
 
@@ -35,6 +37,8 @@ struct signal_action {
 };
 
 struct process {
+    char name[20];
+    bool can_power;
     struct native_space space;
     uint32_t cwd, brk, heap_start, mmap_start, mmap_end, tid_address;
     uint32_t pid, parent, group, session, status;
@@ -72,8 +76,9 @@ struct local_socket {
 struct native_runtime {
     struct process tasks[TASKS];
     struct file files[FILE_COUNT];
-    uint32_t next_pid, now;
+    uint32_t next_pid, now, installed_kib;
     uint8_t key;
+    bool desktop;
     struct pipe pipes[PIPE_COUNT];
     struct local_socket sockets[PIPE_COUNT];
     char tmp_name[32];
@@ -84,6 +89,7 @@ struct native_runtime {
 _Static_assert(sizeof(struct native_runtime) <= DDOS_X86_NATIVE_METADATA_PAGES * NATIVE_PAGE,
                "runtime metadata exceeds the firmware reservation");
 
+_Static_assert(TASKS <= DDOS_STATUS_TASKS, "desktop status must fit the task table");
 static struct native_runtime *runtime;
 
 static void zero(void *target, unsigned count)
@@ -208,6 +214,8 @@ static unsigned node(const char *path)
         return 1;
     if (same(path, "zero"))
         return 2;
+    if (same(path, "mouse0") && platform_has_mouse())
+        return MOUSE_NODE;
     if (same(path, "fb0") && native_framebuffer())
         return 4;
     return same(path, "console") || same(path, "tty") ? 3 : 0;
@@ -406,6 +414,8 @@ static int openat(struct process *p, uint32_t dirfd, uint32_t address, uint32_t 
             number = node(name);
             if (!number)
                 return -ENOENT;
+            if (number == MOUSE_NODE && (flags & 3))
+                return -EACCES;
             if ((flags & (O_EXCL | O_CREAT)) == (O_EXCL | O_CREAT))
                 return -EEXIST;
         } else {
@@ -490,6 +500,13 @@ static int io_read(struct process *p, uint32_t number, uint32_t address, uint32_
         return count;
     }
     if (file->volume == VFS_DEV && file->inode != 3) {
+        if (file->inode == MOUSE_NODE) {
+            if (size < 3)
+                return -EINVAL;
+            if (platform_mouse_read(target))
+                return 3;
+            return file->flags & O_NONBLOCK ? -EAGAIN : BLOCKED;
+        }
         if (file->inode == 4)
             return -EINVAL;
         if (file->inode == 1)
@@ -500,7 +517,7 @@ static int io_read(struct process *p, uint32_t number, uint32_t address, uint32_
     }
     if (file->volume == VFS_DEV) {
         unsigned c = console_key();
-        if (!c)
+        if (!c || (runtime->desktop && c == 27))
             return file->flags & O_NONBLOCK ? -EAGAIN : BLOCKED;
         runtime->key = 0;
         *target = c == '\r' ? '\n' : c;
@@ -699,8 +716,8 @@ static int path_info(struct process *p, struct vfs_path route, struct ext2_inode
     }
     if (route.volume == VFS_DEV && node(name)) {
         info->kind = 0020000;
-        info->mode = 0020666;
         info->number = node(name);
+        info->mode = info->number == MOUSE_NODE ? 0020444 : 0020666;
         return 0;
     }
     return -ENOENT;
@@ -916,10 +933,23 @@ static int exec_image(struct process *p, const char *path, uint32_t argv, uint32
         return -EINVAL;
     unsigned begin = (stack.cursor - words * 4) & ~15u;
 
+    const char *basename = path;
+    for (const char *c = path; *c; ++c) {
+        if (*c == '/' || *c == 92)
+            basename = c + 1;
+    }
     struct native_elf elf;
     struct native_space *space = &p->space;
     if (!native_load_elf(space, &info, &elf))
         return -ENOEXEC;
+    p->can_power = false;
+    zero(p->name, sizeof(p->name));
+    unsigned pos = 0;
+    while (pos + 1 < sizeof(p->name) && basename[pos]) {
+        p->name[pos] = basename[pos];
+        ++pos;
+    }
+    p->name[pos] = 0;
     uint32_t strings = space->base + space->size - sizeof(stack.bytes);
     uint8_t *position = stack.bytes + begin;
     write32(position, argc);
@@ -983,6 +1013,7 @@ static int fork_task(struct process *parent)
     child->pid = runtime->next_pid++;
     child->parent = parent->pid;
     child->tid_address = 0;
+    child->can_power = false;
     child->pending = 0;
     child->deadline_set = false;
     for (unsigned i = 0; i < FD_COUNT; ++i) {
@@ -1057,8 +1088,12 @@ static unsigned fd_events(struct file *file)
         return POLLNVAL;
     unsigned events = (file->flags & 3) != 1 ? POLLIN : 0;
     events |= (file->flags & 3) ? POLLOUT : 0;
-    if (file->volume == VFS_DEV && file->inode == 3 && (events & POLLIN) && !console_key())
-        events &= ~POLLIN;
+    if (file->volume == VFS_DEV && events & POLLIN) {
+        if (file->inode == 3 && !console_key())
+            events &= ~POLLIN;
+        if (file->inode == MOUSE_NODE && !platform_mouse_pending())
+            events &= ~POLLIN;
+    }
     if (file->volume == VFS_SOCKET)
         return runtime->sockets[file->inode - 1].count ? POLLIN : 0;
     if (file->volume == VFS_PIPE) {
@@ -1512,10 +1547,54 @@ static int framebuffer_ioctl(struct process *p, const struct native_frame *r)
     return 0;
 }
 
+static int desktop_status(struct process *caller, uint32_t address)
+{
+    struct ddos_desktop_status status;
+    uint8_t *output = user(caller, address, sizeof(status), true);
+    if (!output)
+        return -EFAULT;
+
+    zero(&status, sizeof(status));
+    status.installed_kib = runtime->installed_kib;
+    status.task_capacity_kib = TASKS * NATIVE_PAGES * (NATIVE_PAGE / 1024);
+    status.uptime_seconds = runtime->now / 1000;
+    const struct native_fb *fb = native_framebuffer();
+    if (fb) {
+        status.width = fb->width;
+        status.height = fb->height;
+    }
+    for (unsigned i = 0; i < TASKS; ++i) {
+        const struct process *task = &runtime->tasks[i];
+        if (task->state == FREE || task->state == ZOMBIE)
+            continue;
+        struct ddos_desktop_task *info = &status.tasks[status.task_count++];
+        info->pid = task->pid;
+        copy((uint8_t *)info->name, (const uint8_t *)task->name, sizeof(info->name));
+        for (unsigned page = 0; page < NATIVE_PAGES; ++page) {
+            if (task->space.access[page] & 1)
+                info->mapped_kib += NATIVE_PAGE / 1024;
+        }
+        status.mapped_kib += info->mapped_kib;
+    }
+    copy(output, (const uint8_t *)&status, sizeof(status));
+    return 0;
+}
+
 static int syscall(struct process *p)
 {
     struct native_frame *r = &p->space.frame;
     switch (r->eax) {
+    case DDOS_GET_STATUS: return desktop_status(p, r->ebx);
+    case DDOS_DESKTOP_POWER:
+        if (!p->can_power)
+            return -EACCES;
+        if (r->ebx == DDOS_POWER_OFF)
+            platform_shutdown();
+        else if (r->ebx == DDOS_RESTART)
+            platform_reboot();
+        else
+            return -EINVAL;
+        return -ENODEV;
     case 2: return fork_task(p);
     case 3: return io_read(p, r->ebx, r->ecx, r->edx);
     case 4: return io_write(p, r->ebx, r->ecx, r->edx);
@@ -1625,7 +1704,8 @@ static int syscall(struct process *p)
         enum volume volume = file->volume;
         info.number = file->inode;
         info.kind = volume == VFS_TMP ? EXT2_REGULAR : (volume == VFS_PIPE ? 0010000 : volume == VFS_SOCKET ? 0140000 : 0020000);
-        info.mode = info.kind | (volume == VFS_TMP ? 0644 : 0666);
+        info.mode = info.kind | (volume == VFS_TMP ? 0644 :
+                                 volume == VFS_DEV && info.number == MOUSE_NODE ? 0444 : 0666);
         info.size = volume == VFS_TMP ? runtime->tmp_size : 0;
         return store_stat(p, r->ecx, volume, &info);
     }
@@ -1692,16 +1772,18 @@ static int desktop_task(struct process *server, unsigned slot, const char *path)
     }
     native_space_init(&child->space, slot);
     int error = exec_image(child, path, 0, 0);
-    if (!error)
+    if (!error) {
+        child->can_power = slot == 2 && same(path, "/bin/taskbar");
         child->state = RUNNABLE;
-    else {
+    } else {
         for (unsigned i = 0; i < 3; ++i)
             close_fd(child, i);
     }
     return error;
 }
 
-static void native_session(uint32_t directory, const char *path, bool quiet, bool desktop)
+static void native_session(uint32_t directory, const char *path, bool quiet, bool desktop,
+                           const char *desktop_app)
 {
     runtime = native_init();
     if (!runtime) {
@@ -1710,6 +1792,8 @@ static void native_session(uint32_t directory, const char *path, bool quiet, boo
         return;
     }
     zero(runtime, sizeof(*runtime));
+    runtime->desktop = desktop;
+    runtime->installed_kib = platform_ram_kib();
     struct process *initial = &runtime->tasks[0];
     initial->cwd = directory;
     initial->cwd_volume = VFS_D;
@@ -1723,7 +1807,7 @@ static void native_session(uint32_t directory, const char *path, bool quiet, boo
     native_space_init(&initial->space, 0);
     int status = exec_image(initial, path, 0, 0);
     bool launch_manager = desktop && !status;
-    if (desktop && status == -ENOENT) {
+    if (desktop && !desktop_app && status == -ENOENT) {
         path = "/bin/nanowm";
         status = exec_image(initial, path, 0, 0);
     }
@@ -1739,7 +1823,7 @@ static void native_session(uint32_t directory, const char *path, bool quiet, boo
     native_clock_start();
     unsigned slot = 0;
     while (initial->state != ZOMBIE) {
-        if (desktop && (platform_try_getc() & 0xff) == 27)
+        if (desktop && console_key() == 27)
             return;
         if (launch_manager) {
             for (unsigned i = 0; i < PIPE_COUNT; ++i) {
@@ -1753,6 +1837,12 @@ static void native_session(uint32_t directory, const char *path, bool quiet, boo
                 int bar = desktop_task(initial, 2, "/bin/taskbar");
                 if (bar && bar != -ENOENT)
                     print("Cannot load /bin/taskbar\r\n");
+                if (desktop_app && desktop_task(initial, 3, desktop_app)) {
+                    print("Cannot load ");
+                    print(desktop_app);
+                    print("\r\n");
+                    return;
+                }
                 launch_manager = false;
                 break;
             }
@@ -1828,16 +1918,16 @@ static void native_session(uint32_t directory, const char *path, bool quiet, boo
 
 void native_start(uint32_t directory, const char *path, bool quiet)
 {
-    native_session(directory, path, quiet, false);
+    native_session(directory, path, quiet, false, 0);
 }
 
-void native_desktop(uint32_t directory)
+void native_desktop(uint32_t directory, const char *app)
 {
     if (!native_framebuffer()) {
-        print("NanoWM needs UEFI GOP. Boot with python boot.py --uefi.\r\n");
+        print("The desktop needs UEFI GOP. Boot with python boot.py --uefi.\r\n");
         return;
     }
     print("Starting NanoWM. Press Esc to return to DDOS.\r\n");
-    native_session(directory, "/bin/nano-X", false, true);
+    native_session(directory, "/bin/nano-X", false, true, app);
     platform_clear();
 }

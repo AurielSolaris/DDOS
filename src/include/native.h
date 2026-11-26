@@ -46,7 +46,7 @@ uint32_t native_step(struct native_space *);
 void native_clock_start(void);
 uint32_t native_millis(void);
 uint32_t native_epoch(void);
-void native_desktop(uint32_t directory);
+void native_desktop(uint32_t directory, const char *app);
 void native_start(uint32_t directory, const char *path, bool quiet);
 
 #endif

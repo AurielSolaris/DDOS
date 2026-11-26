@@ -64,7 +64,9 @@ _start:
 section .text progbits alloc exec nowrite align=1
 bits 32
 global platform_putc, platform_getc, platform_try_getc, platform_clear, platform_read
-global platform_can_run, copy_to_program, copy_from_program, run_program
+global platform_ram_kib
+global platform_has_mouse, platform_mouse_pending, platform_mouse_read
+global platform_can_run, platform_calculator_boot, copy_to_program, copy_from_program, run_program
 
 protected_entry:
     mov ax, DATA32
@@ -118,6 +120,14 @@ platform_read:
     mov edx, [esp + 8]
     mov ecx, read
     jmp call_bios
+
+platform_ram_kib:
+platform_has_mouse:
+platform_mouse_pending:
+platform_mouse_read:
+platform_calculator_boot:
+    xor eax, eax
+    ret
 
 platform_can_run:
     mov eax, 1

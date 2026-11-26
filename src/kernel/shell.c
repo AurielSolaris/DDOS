@@ -282,7 +282,10 @@ static void help(void)
           "  ECHO [text]        Print text\r\n"
           "  VER                Show version and CPU mode\r\n"
           "  RUN [path]         Run a native ELF or the C demo\r\n"
+          "  CALC               Open the desktop calculator (UEFI)\r\n"
           "  NANOWM             Start the Nano-X desktop (UEFI)\r\n"
+          "  SHUTDOWN           Power off the VM\r\n"
+          "  REBOOT             Restart the VM\r\n"
           "  RINGS              Test x86 privilege domains\r\n"
           "  HELP               Show this command list\r\n");
     if (platform_can_run())
@@ -302,7 +305,15 @@ static void command(char *line)
     } else if (equals(line, "RUN")) {
         native_start(directory_for('D'), *arguments ? arguments : "/bin/ddosapp", false);
     } else if (equals(line, "NANOWM")) {
-        native_desktop(directory_for('D'));
+        native_desktop(directory_for('D'), 0);
+    } else if (equals(line, "CALC")) {
+        native_desktop(directory_for('D'), "/bin/calculator");
+    } else if (equals(line, "SHUTDOWN")) {
+        platform_shutdown();
+        print("Shutdown is unavailable on this machine.\r\n");
+    } else if (equals(line, "REBOOT")) {
+        platform_reboot();
+        print("Reboot is unavailable on this machine.\r\n");
     } else if (equals(line, "RINGS")) {
         x86_domains_test();
     } else if (equals(line, "CLS")) {
@@ -343,6 +354,8 @@ void kernel_main(void)
     print("DDOS - DOS Derived OS\r\n");
     if (vfs_select(VFS_D))
         print(ext2_writable() ? "D: ext2\r\n" : "D: ext2 (read-only)\r\n");
+    if (platform_calculator_boot())
+        native_desktop(EXT2_ROOT, "/bin/calculator");
     for (;;) {
         char line[128];
         unsigned length = 0;

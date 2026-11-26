@@ -51,9 +51,12 @@ def find_firmware(qemu):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--uefi", action="store_true", help="boot with x64 UEFI and GOP")
+    parser.add_argument("--calculator", action="store_true", help="boot UEFI and open the calculator")
     parser.add_argument("--debug-log", type=Path, help="write guest debug console output to a file")
     parser.add_argument("--system-image", type=Path, default=SYSTEM, help="ext2 system image to boot")
     args = parser.parse_args()
+    args.uefi |= args.calculator
+    startup = ("-fw_cfg", "name=opt/ddos/calculator,string=1") if args.calculator else ()
     debug = ()
     if args.debug_log:
         debug = ("-debugcon", f"file:{args.debug_log.resolve().as_posix()}")
@@ -77,7 +80,7 @@ def main():
                 shutil.copyfile(system_image, system_copy)
                 system_option = system_copy.as_posix().replace(",", ",,")
                 data_disk += ("-drive", f"file={system_option},format=raw,if=ide,index=2")
-            elif args.system_image != SYSTEM:
+            elif args.calculator or args.system_image != SYSTEM:
                 raise SystemExit(f"DDOS system image was not found: {system_image}")
             if args.uefi:
                 code, variables = find_firmware(qemu)
@@ -91,7 +94,7 @@ def main():
                     qemu,
                     "-drive", f"if=pflash,unit=0,format=raw,readonly=on,file={code_path}",
                     "-drive", f"if=pflash,unit=1,format=raw,file={vars_option}",
-                    "-drive", f"file=fat:rw:{esp_option},format=raw,if=ide,index=0", *data_disk, *debug,
+                    "-drive", f"file=fat:rw:{esp_option},format=raw,if=ide,index=0", *data_disk, *startup, *debug,
                 )
             else:
                 boot_image = scratch / "ddos.img"

@@ -5,6 +5,7 @@
 #include "x86_domains.h"
 #include "native.h"
 #include "font8x8_basic.h"
+#include "ps2.h"
 
 extern void kernel_main(void);
 
@@ -99,84 +100,6 @@ void platform_putc(unsigned character)
     }
 }
 
-enum { KBD_DATA = 0x60, KBD_STATUS = 0x64 };
-
-static bool write_keyboard(uint16_t port, uint8_t value)
-{
-    for (unsigned tries = 0; tries < 100000; ++tries) {
-        if (!(inb(KBD_STATUS) & 2)) {
-            outb(port, value);
-            return true;
-        }
-    }
-    return false;
-}
-
-static void setup_keyboard(void)
-{
-    if (!write_keyboard(KBD_STATUS, 0xad))
-        return;
-    for (unsigned i = 0; i < 32 && (inb(KBD_STATUS) & 1); ++i)
-        inb(KBD_DATA);
-    if (!write_keyboard(KBD_STATUS, 0x20))
-        return;
-    for (unsigned tries = 0; tries < 100000; ++tries) {
-        if (inb(KBD_STATUS) & 1) {
-            uint8_t config = inb(KBD_DATA);
-            if (write_keyboard(KBD_STATUS, 0x60))
-                write_keyboard(KBD_DATA, (config | 0x40) & ~1);
-            break;
-        }
-    }
-    if (write_keyboard(KBD_STATUS, 0xae))
-        write_keyboard(KBD_DATA, 0xf4);
-}
-
-unsigned platform_try_getc(void)
-{
-    static const char plain[] =
-        "\0\0331234567890-=\b\tqwertyuiop[]\r\0asdfghjkl;'"
-        "\140\0\\zxcvbnm,./\0*\0 ";
-    static const char shifted[] =
-        "\0\033!@#$%^&*()_+\b\tQWERTYUIOP{}\r\0ASDFGHJKL:\""
-        "~\0|ZXCVBNM<>?\0*\0 ";
-    static uint8_t shift;
-    static bool extended;
-
-    for (;;) {
-        uint8_t status = inb(KBD_STATUS);
-        if (!(status & 1))
-            return 0;
-        uint8_t scan = inb(KBD_DATA);
-        if (status & 0x20)
-            continue;
-        if (scan == 0xe0) {
-            extended = true;
-        } else if (extended) {
-            extended = false;
-            if (scan == 0x1c)
-                return '\r';
-        } else if ((scan & 0x7f) == 0x2a || (scan & 0x7f) == 0x36) {
-            uint8_t bit = (scan & 0x7f) == 0x2a ? 1 : 2;
-            if (scan & 0x80)
-                shift &= ~bit;
-            else
-                shift |= bit;
-        } else if (scan < sizeof(plain) && plain[scan]) {
-            return shift ? shifted[scan] : plain[scan];
-        }
-    }
-}
-
-unsigned platform_getc(void)
-{
-    unsigned key;
-    do {
-        key = platform_try_getc();
-    } while (!key);
-    return key;
-}
-
 bool platform_read(unsigned sector, void *buffer)
 {
     if (sector >= 2880)
@@ -186,6 +109,60 @@ bool platform_read(unsigned sector, void *buffer)
     for (unsigned offset = 0; offset < 512; ++offset)
         target[offset] = source[offset];
     return true;
+}
+
+static void firmware_select(uint16_t item)
+{
+    __asm__ volatile ("outw %0,%1" :: "a"(item), "d"((uint16_t)0x510));
+}
+
+static uint32_t firmware_read(unsigned bytes)
+{
+    uint32_t value = 0;
+    while (bytes--)
+        value = (value << 8) | inb(0x511);
+    return value;
+}
+
+uint32_t platform_ram_kib(void)
+{
+    firmware_select(0);
+    if (firmware_read(4) != 0x51454d55)
+        return 0;
+    firmware_select(3); /* QEMU little-endian RAM size in bytes. */
+    uint32_t low = 0, high = 0;
+    for (unsigned shift = 0; shift < 32; shift += 8)
+        low |= firmware_read(1) << shift;
+    for (unsigned shift = 0; shift < 32; shift += 8)
+        high |= firmware_read(1) << shift;
+    return high >= 1024 ? UINT32_MAX : (high << 22) | (low >> 10);
+}
+
+bool platform_calculator_boot(void)
+{
+    static const char option[] = "opt/ddos/calculator";
+    firmware_select(0);
+    if (firmware_read(4) != 0x51454d55) /* QEMU */
+        return false;
+    firmware_select(0x19);
+    unsigned count = firmware_read(4);
+    if (count > 0x4000)
+        return false;
+    for (unsigned i = 0; i < count; ++i) {
+        unsigned size = firmware_read(4), selector = firmware_read(2);
+        firmware_read(2);
+        bool match = true;
+        for (unsigned j = 0; j < 56; ++j) {
+            unsigned ch = firmware_read(1);
+            if (j < sizeof(option) && ch != (unsigned char)option[j])
+                match = false;
+        }
+        if (match && size && selector >= 0x20 && selector < 0x4000) {
+            firmware_select(selector);
+            return firmware_read(1) == '1';
+        }
+    }
+    return false;
 }
 
 bool platform_can_run(void)
@@ -223,6 +200,6 @@ void uefi_kernel_main(uint32_t kernel_base)
     x86_native_configure(video->domain_arena + video->domain_bytes);
     native_fb_configure(video->framebuffer, video->width, video->height,
                         video->stride, video->format);
-    setup_keyboard();
+    ps2_init();
     kernel_main();
 }
