@@ -10,6 +10,7 @@ void ddos_frame_state(int fd, int begin);
 enum { FRAME_CLIENTS = 16 };
 static MWTIMEOUT frame_start[FRAME_CLIENTS], frame_activity[FRAME_CLIENTS];
 static bool painting[FRAME_CLIENTS];
+static MWTIMEOUT last_poll;
 
 static struct {
     int left, top, right, bottom;
@@ -31,7 +32,7 @@ static void ddos_damage(PSD psd, MWCOORD x, MWCOORD y, MWCOORD width, MWCOORD he
         damage.top = y;
         damage.right = right;
         damage.bottom = bottom;
-        damage.first = GdGetTickCount();
+        damage.first = last_poll = GdGetTickCount();
         damage.latest = damage.first;
         damage.changed = true;
     } else {
@@ -67,7 +68,7 @@ static int ddos_present(PSD psd)
 {
     (void)psd;
     if (damage.changed) {
-        MWTIMEOUT now = GdGetTickCount();
+        MWTIMEOUT now = last_poll = GdGetTickCount();
         if (!frame_in_progress(now) && (now - damage.latest >= 13 || now - damage.first >= 42)) {
             uint32_t area[] = {damage.left, damage.top,
                                damage.right - damage.left, damage.bottom - damage.top};
@@ -81,7 +82,7 @@ static int ddos_present(PSD psd)
 /* Notify the presenter after each batch of commands serviced by Nano-X. */
 void ddos_frame_activity(int fd)
 {
-    MWTIMEOUT now = GdGetTickCount();
+    MWTIMEOUT now = last_poll;
     if (fd >= 0 && fd < FRAME_CLIENTS && painting[fd])
         frame_activity[fd] = now;
     if (damage.changed)

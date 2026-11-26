@@ -15,6 +15,11 @@ static int desk_scale = DDOS_SCALE_DEFAULT;
 static GR_FONT_ID desk_font;
 static GR_GC_ID desk_font_gc;
 static char desk_font_path[DDOS_FONT_PATH];
+static struct {
+    char label[40];
+    int width;
+} desk_width_cache[16];
+static unsigned desk_next_width;
 
 static inline int desk_px(int value)
 {
@@ -30,15 +35,20 @@ static inline GR_FONT_ID desk_load_font(const char *path)
     requested.lfHeight = desk_px(12);
     requested.lfWeight = MWLF_WEIGHT_REGULAR;
     strcpy(requested.lfFaceName, path);
-    return GrCreateFontEx("", 0, 0, &requested);
+    GR_FONT_ID font = GrCreateFontEx("", 0, 0, &requested);
+    if (font)
+        GrSetFontAttr(font, MWTF_ANTIALIAS, 0);
+    return font;
 }
 
 static inline bool desk_sync_appearance(void)
 {
     long next = syscall(DDOS_UI_SCALE, 0);
     bool rescaled = next >= DDOS_SCALE_MIN && next <= DDOS_SCALE_MAX && next != desk_scale;
-    if (rescaled)
+    if (rescaled) {
         desk_scale = next;
+        memset(desk_width_cache, 0, sizeof(desk_width_cache));
+    }
     if (desk_font_gc) {
         char path[DDOS_FONT_PATH];
         if (syscall(DDOS_UI_FONT, path, 0) == 0 && strcmp(path, desk_font_path)) {
@@ -48,6 +58,7 @@ static inline bool desk_sync_appearance(void)
                 if (desk_font)
                     GrDestroyFont(desk_font);
                 desk_font = new_font;
+                memset(desk_width_cache, 0, sizeof(desk_width_cache));
             }
             strcpy(desk_font_path, path);
             return true;
@@ -113,11 +124,25 @@ static inline void desk_fill(GR_DRAW_ID id, GR_GC_ID gc, int x, int y, int w, in
 
 static inline int desk_text_width(GR_GC_ID gc, const char *text)
 {
+    size_t length = strlen(text);
     if (!desk_font && desk_scale != DDOS_SCALE_DEFAULT)
-        return strlen(text) * 7;
+        return length * 7;
+    bool cache = gc == desk_font_gc && length && length < sizeof(desk_width_cache[0].label);
+    if (cache) {
+        for (unsigned i = 0; i < sizeof(desk_width_cache) / sizeof(desk_width_cache[0]); ++i) {
+            if (!strcmp(desk_width_cache[i].label, text))
+                return desk_width_cache[i].width;
+        }
+    }
     GR_SIZE w, h, baseline;
-    GrGetGCTextSize(gc, (void *)text, strlen(text), GR_TFASCII, &w, &h, &baseline);
-    return (w * 100 + desk_scale - 1) / desk_scale;
+    GrGetGCTextSize(gc, (void *)text, length, GR_TFASCII, &w, &h, &baseline);
+    int width = (w * 100 + desk_scale - 1) / desk_scale;
+    if (cache) {
+        unsigned slot = desk_next_width++ % (sizeof(desk_width_cache) / sizeof(desk_width_cache[0]));
+        strcpy(desk_width_cache[slot].label, text);
+        desk_width_cache[slot].width = width;
+    }
+    return width;
 }
 
 static inline void desk_bitmap_text(GR_DRAW_ID id, GR_GC_ID gc, int x, int y,

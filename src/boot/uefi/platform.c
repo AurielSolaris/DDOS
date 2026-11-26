@@ -128,7 +128,7 @@ uint32_t platform_ram_kib(void)
 {
     firmware_select(0);
     if (firmware_read(4) != 0x51454d55)
-        return 0;
+        return video->ram_kib;
     firmware_select(3); /* QEMU little-endian RAM size in bytes. */
     uint32_t low = 0, high = 0;
     for (unsigned shift = 0; shift < 32; shift += 8)

@@ -5,11 +5,19 @@
 #include <stdio.h>
 #include <unistd.h>
 
-enum { WIDTH = 464, SETTINGS_H = 420, TASKS_H = 396, TASK_ROWS = 8 };
+enum { WIDTH = 464, SETTINGS_H = 510, TASKS_H = 396, TASK_ROWS = 8 };
 static unsigned task_page;
 static bool font_edit;
 static char font_entry[DDOS_FONT_PATH];
 static const char *font_hint;
+static const char *render_hint;
+
+enum { RENDER_X = 28, RENDER_STEP = 131, RENDER_Y = 448, RENDER_W = 124, RENDER_H = 25 };
+
+static void render_select(unsigned mode)
+{
+    render_hint = syscall(DDOS_UI_RENDER, mode) == 0 ? 0 : "CPU acceleration is unavailable.";
+}
 
 static void memory_text(char *out, unsigned size, uint32_t kib)
 {
@@ -28,7 +36,8 @@ static void info_row(GR_WINDOW_ID window, GR_GC_ID gc, int y,
     desk_text(window, gc, 191, y, value, DESK_ON_SURFACE);
 }
 
-static void settings(GR_WINDOW_ID window, GR_GC_ID gc, const struct ddos_desktop_status *status)
+static void settings(GR_WINDOW_ID window, GR_GC_ID gc, const struct ddos_desktop_status *status,
+                     const struct ddos_graphics_status *graphics)
 {
     char ram[24], display[32];
     memory_text(ram, sizeof(ram), status->installed_kib);
@@ -37,12 +46,21 @@ static void settings(GR_WINDOW_ID window, GR_GC_ID gc, const struct ddos_desktop
     desk_icon(window, gc, ICON_SETTINGS, 24, 19, 3);
     desk_text(window, gc, 63, 25, "System information", DESK_ON_SURFACE);
     desk_round(window, gc, 16, 60, WIDTH - 32, 200, 12, DESK_SURFACE);
-    info_row(window, gc, 79, "Operating system", "DDOS");
-    info_row(window, gc, 107, "CPU mode", "x86 / 32-bit protected mode");
+    info_row(window, gc, 79, "Operating system", "DDOS / 32-bit x86");
+    const char *processor = graphics->cpu;
+    while (*processor == ' ')
+        ++processor;
+    char cpu[sizeof(graphics->cpu)];
+    snprintf(cpu, sizeof(cpu), "%s", *processor ? processor : "Unknown x86 CPU");
+    size_t cpu_length = strlen(cpu);
+    while (cpu_length && desk_text_width(gc, cpu) > WIDTH - 220)
+        cpu[--cpu_length] = 0;
+    info_row(window, gc, 107, "Processor", cpu);
     info_row(window, gc, 135, "Firmware", status->width ? "UEFI" : "Unknown");
     info_row(window, gc, 163, "Display", status->width ? display : "Unavailable");
-    info_row(window, gc, 191, "Installed RAM", status->installed_kib ? ram : "Unavailable");
+    info_row(window, gc, 191, "Reported RAM", status->installed_kib ? ram : "Unavailable");
     info_row(window, gc, 219, "Desktop", "Nano-X / NanoWM");
+    info_row(window, gc, 242, "Kernel", "EDOS (Extended DOS Kernel)");
     char percent[12];
     snprintf(percent, sizeof(percent), "%d%%", desk_scale);
     desk_text(window, gc, 29, 281, "Window scale", DESK_MUTED);
@@ -69,6 +87,31 @@ static void settings(GR_WINDOW_ID window, GR_GC_ID gc, const struct ddos_desktop
     } else {
         desk_text(window, gc, 29, 386, font_hint ? font_hint : "OpenType (.otf) or Web Open Font (.woff)", DESK_MUTED);
     }
+
+    desk_round(window, gc, 16, 417, WIDTH - 32, 78, 8, DESK_SURFACE);
+    char adapter[48];
+    if (graphics->pci_vendor)
+        snprintf(adapter, sizeof(adapter), "PCI display %04X:%04X", graphics->pci_vendor, graphics->pci_device);
+    else
+        strcpy(adapter, "PCI display unavailable");
+    desk_text(window, gc, 28, 427, adapter, DESK_ON_SURFACE);
+    desk_text(window, gc, 250, 427, "GPU acceleration unavailable", DESK_MUTED);
+    static const char *const options[] = {"Auto", "Software", "CPU accelerated"};
+    unsigned required = DDOS_GRAPHICS_SHADOW | DDOS_GRAPHICS_SSE2;
+    for (unsigned i = 0; i < 3; ++i) {
+        int x = RENDER_X + i * RENDER_STEP;
+        bool enabled = i != 2 || (graphics->capabilities & required) == required;
+        bool selected = graphics->requested_mode == i + DDOS_RENDER_AUTO;
+        desk_round(window, gc, x, RENDER_Y, RENDER_W, RENDER_H, 6,
+                   selected ? DESK_HIGH : DESK_CONTAINER);
+        desk_text(window, gc, x + 10, RENDER_Y + 7, options[i],
+                  enabled ? DESK_PRIMARY : DESK_MUTED);
+    }
+    const char *active = graphics->active_mode == DDOS_RENDER_SSE2 ? "Active: SSE2 framebuffer copy"
+        : graphics->capabilities & DDOS_GRAPHICS_SHADOW ? "Active: scalar framebuffer copy"
+        : "Active: direct GOP framebuffer";
+    desk_text(window, gc, 28, 481, render_hint ? render_hint : active,
+              render_hint ? DESK_ERROR : DESK_MUTED);
 }
 
 static void set_font(const char *path)
@@ -172,6 +215,7 @@ int main(int argc, char **argv)
     GrMapWindow(window);
     GrCreateTimer(window, manager ? 500 : 300);
     struct ddos_desktop_status previous = {0};
+    struct ddos_graphics_status previous_graphics = {0};
     for (;;) {
         GR_EVENT event;
         GrGetNextEvent(&event);
@@ -198,6 +242,10 @@ int main(int argc, char **argv)
                 font_edit = false;
                 set_font(DDOS_DEFAULT_FONT);
             }
+            if (y >= RENDER_Y && y < RENDER_Y + RENDER_H &&
+                x >= RENDER_X && x < RENDER_X + 3 * RENDER_STEP &&
+                (x - RENDER_X) % RENDER_STEP < RENDER_W)
+                render_select(DDOS_RENDER_AUTO + (x - RENDER_X) / RENDER_STEP);
             if (next != desk_scale && next >= DDOS_SCALE_MIN && next <= DDOS_SCALE_MAX)
                 syscall(DDOS_UI_SCALE, next);
         } else if (!manager && event.type == GR_EVENT_TYPE_KEY_DOWN) {
@@ -212,6 +260,8 @@ int main(int argc, char **argv)
                     next += 5;
                 else if (key == '0')
                     next = DDOS_SCALE_DEFAULT;
+                if (key >= '1' && key <= '3')
+                    render_select(DDOS_RENDER_AUTO + key - '1');
                 if (next != desk_scale && next >= DDOS_SCALE_MIN && next <= DDOS_SCALE_MAX)
                     syscall(DDOS_UI_SCALE, next);
             }
@@ -234,14 +284,20 @@ int main(int argc, char **argv)
             desk_text(window, gc, 24, 25, "System information unavailable", DESK_ERROR);
         } else {
             status.uptime_seconds = 0;
-            if (!rescaled && event.type == GR_EVENT_TYPE_TIMER && !memcmp(&status, &previous, sizeof(status)))
+            struct ddos_graphics_status graphics = {0};
+            if (!manager)
+                syscall(DDOS_GET_GRAPHICS, &graphics);
+            bool changed = manager ? memcmp(&status, &previous, sizeof(status)) != 0
+                                   : memcmp(&graphics, &previous_graphics, sizeof(graphics)) != 0;
+            if (!rescaled && event.type == GR_EVENT_TYPE_TIMER && !changed)
                 continue;
             GrDdosFrame(GR_TRUE);
             if (manager)
                 task_manager(window, gc, &status);
             else
-                settings(window, gc, &status);
+                settings(window, gc, &status, &graphics);
             previous = status;
+            previous_graphics = graphics;
         }
         GrDdosFrame(GR_FALSE);
     }

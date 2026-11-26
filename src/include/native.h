@@ -34,7 +34,9 @@ struct native_fb {
 };
 void native_fb_configure(uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t);
 const struct native_fb *native_framebuffer(void);
-void native_fb_present(unsigned x, unsigned y, unsigned width, unsigned height);
+struct ddos_graphics_status;
+void native_graphics_detect(struct ddos_graphics_status *);
+void native_fb_present(unsigned x, unsigned y, unsigned width, unsigned height, bool simd);
 
 void *native_init(void);
 void native_space_init(struct native_space *, unsigned slot, bool desktop_server);

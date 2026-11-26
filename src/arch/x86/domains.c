@@ -1,5 +1,6 @@
 #include "x86_domains.h"
 #include "native.h"
+#include "desktop_status.h"
 
 #include <stdbool.h>
 
@@ -52,6 +53,8 @@ struct gdtr x86_domain_gdtr DOMAIN_STATE, x86_domain_idtr DOMAIN_STATE;
 
 extern unsigned x86_has_write_protect(void);
 extern unsigned x86_enable_sse(void);
+extern unsigned x86_has_cpuid(void);
+extern void x86_copy_scanline_sse2(uint32_t dest, const void *source, unsigned pixels);
 extern void x86_save_fpu(void *);
 extern void x86_restore_fpu(const void *);
 extern uint32_t x86_enter_domain(uint32_t directory, unsigned service, struct native_frame *);
@@ -229,7 +232,55 @@ const struct native_fb *native_framebuffer(void)
     return framebuffer.size ? &framebuffer : 0;
 }
 
-void native_fb_present(unsigned x, unsigned y, unsigned width, unsigned height)
+static void cpuid(uint32_t leaf, uint32_t words[4])
+{
+    __asm__ volatile ("cpuid" : "=a"(words[0]), "=b"(words[1]), "=c"(words[2]), "=d"(words[3]) : "a"(leaf));
+}
+
+static uint32_t pci_read(unsigned slot, unsigned offset)
+{
+    uint32_t address = 0x80000000u | (slot << 8) | offset, value;
+    __asm__ volatile ("outl %0, %w1" :: "a"(address), "d"(0xcf8));
+    __asm__ volatile ("inl %w1, %0" : "=a"(value) : "d"(0xcfc));
+    return value;
+}
+
+void native_graphics_detect(struct ddos_graphics_status *status)
+{
+    if (framebuffer.shadow)
+        status->capabilities |= DDOS_GRAPHICS_SHADOW;
+    if (x86_has_cpuid()) {
+        uint32_t words[4];
+        cpuid(0, words);
+        uint32_t max = words[0];
+        write32((uint8_t *)status->cpu, words[1]);
+        write32((uint8_t *)status->cpu + 4, words[3]);
+        write32((uint8_t *)status->cpu + 8, words[2]);
+        if (sse && max >= 1) {
+            cpuid(1, words);
+            if (words[3] & (1u << 26))
+                status->capabilities |= DDOS_GRAPHICS_SSE2;
+        }
+        cpuid(0x80000000u, words);
+        if (words[0] >= 0x80000004u) {
+            for (unsigned leaf = 0; leaf < 3; ++leaf) {
+                cpuid(0x80000002u + leaf, words);
+                for (unsigned i = 0; i < 4; ++i)
+                    write32((uint8_t *)status->cpu + leaf * 16 + i * 4, words[i]);
+            }
+        }
+    }
+    for (unsigned slot = 0; slot < 32 * 8; ++slot) {
+        if ((pci_read(slot, 8) >> 24) != 3)
+            continue;
+        uint32_t id = pci_read(slot, 0);
+        status->pci_vendor = id;
+        status->pci_device = id >> 16;
+        break;
+    }
+}
+
+void native_fb_present(unsigned x, unsigned y, unsigned width, unsigned height, bool simd)
 {
     unsigned offset = (y * framebuffer.stride + x) * 4;
     const uint8_t *source = (const void *)(framebuffer.shadow - physical_base + offset);
@@ -239,10 +290,16 @@ void native_fb_present(unsigned x, unsigned y, unsigned width, unsigned height)
         const uint8_t *row = source;
         uint32_t dest = target;
         unsigned count = width;
-        __asm__ volatile ("cld; rep movsl" : "+S"(row), "+D"(dest), "+c"(count) :: "memory");
+        if (simd) {
+            x86_copy_scanline_sse2(dest, row, count);
+        } else {
+            __asm__ volatile ("cld; rep movsl" : "+S"(row), "+D"(dest), "+c"(count) :: "memory");
+        }
         source += pitch;
         target += pitch;
     }
+    if (simd)
+        __asm__ volatile ("sfence" ::: "memory");
 }
 
 void *native_init(void)

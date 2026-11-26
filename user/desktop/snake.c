@@ -69,10 +69,12 @@ static void advance(void)
 {
     const struct cell delta[] = {{1, 0}, {0, 1}, {-1, 0}, {0, -1}};
     direction = next;
-    struct cell position = {body[0].x + delta[direction].x, body[0].y + delta[direction].y};
+    struct cell position = {
+        (body[0].x + delta[direction].x + COLS) % COLS,
+        (body[0].y + delta[direction].y + ROWS) % ROWS,
+    };
     bool grow = position.x == food.x && position.y == food.y;
-    if (position.x < 0 || position.x >= COLS || position.y < 0 || position.y >= ROWS ||
-        occupied(position, size - !grow)) {
+    if (occupied(position, size - !grow)) {
         state = LOST;
         return;
     }
@@ -87,6 +89,20 @@ static void advance(void)
         place_food();
 }
 
+static void paint_cell(struct cell cell, GR_COLOR color)
+{
+    desk_fill(window, gc, X + cell.x * CELL + 1, Y + cell.y * CELL + 1, CELL - 2, CELL - 2, color);
+}
+
+static void paint_step(struct cell previous_tail)
+{
+    GrDdosFrame(GR_TRUE);
+    paint_cell(previous_tail, DESK_SURFACE);
+    paint_cell(body[1], GR_RGB(74, 168, 151));
+    paint_cell(body[0], GR_RGB(149, 236, 202));
+    GrDdosFrame(GR_FALSE);
+}
+
 static void paint(void)
 {
     GrDdosFrame(GR_TRUE);
@@ -99,8 +115,7 @@ static void paint(void)
     desk_fill(window, gc, X - 1, Y - 1, COLS * CELL + 2, ROWS * CELL + 2, DESK_OUTLINE);
     desk_fill(window, gc, X, Y, COLS * CELL, ROWS * CELL, DESK_SURFACE);
     for (unsigned i = 0; i < size; ++i)
-        desk_fill(window, gc, X + body[i].x * CELL + 1, Y + body[i].y * CELL + 1,
-                  CELL - 2, CELL - 2, i ? GR_RGB(74, 168, 151) : GR_RGB(149, 236, 202));
+        paint_cell(body[i], i ? GR_RGB(74, 168, 151) : GR_RGB(149, 236, 202));
     if (state != WON)
         desk_round(window, gc, X + food.x * CELL + 3, Y + food.y * CELL + 3,
                    CELL - 6, CELL - 6, 4, GR_RGB(255, 192, 121));
@@ -109,7 +124,7 @@ static void paint(void)
     desk_round(window, gc, 20, H - 45, 101, 28, 7, DESK_HIGH);
     desk_text(window, gc, 31, H - 36, button, DESK_PRIMARY);
     const char *status = state == LOST ? "Game over" : state == WON ? "Board cleared!" :
-                         "Arrow keys / WASD    Space to pause";
+                         "Edges wrap   WASD / arrows   Space pauses";
     desk_text(window, gc, 139, H - 36, status, DESK_ON_SURFACE);
     GrDdosFrame(GR_FALSE);
 }
@@ -180,7 +195,13 @@ int main(void)
             unsigned interval = 180 - (score > 15 ? 90 : score * 6);
             if (state == PLAYING && now - last_move >= interval) {
                 last_move = now;
+                struct cell tail = body[size - 1];
+                unsigned length = size;
                 advance();
+                if (!changed && state == PLAYING && size == length) {
+                    paint_step(tail);
+                    continue;
+                }
             } else if (!changed) {
                 continue;
             }
@@ -189,7 +210,10 @@ int main(void)
             if (x >= 20 && x < 121 && y >= H - 45 && y < H - 17)
                 toggle();
         } else if (event.type == GR_EVENT_TYPE_KEY_DOWN) {
+            enum state before = state;
             keyboard(event.keystroke.ch);
+            if (state == before)
+                continue;
         } else if (event.type != GR_EVENT_TYPE_EXPOSURE) {
             continue;
         }

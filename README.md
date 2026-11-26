@@ -35,7 +35,14 @@ name or part of one, use the arrow keys or Tab to select, and press Enter.
 The ranking prefers whole and prefix matches, then matches typed letters
 in order. F3 also opens the launcher if the host intercepts Win/Cmd+R.
 
-Settings shows firmware, display, and installed guest RAM information.
+Settings shows the processor, firmware, PCI display adapter ID, display
+mode, firmware-reported RAM, and the EDOS (Extended DOS Kernel) name.
+Its render modes apply immediately. **Auto** uses SSE2 for eligible
+shadow-buffer copies when the processor supports it. **Software**
+uses the scalar copy. **CPU accelerated** explicitly selects SSE2
+when available. Use the buttons or keys 1, 2, and 3. Text still uses
+the CPU, with grayscale antialiasing for scalable fonts. GPU
+acceleration requires a DDOS driver for the detected display adapter.
 Use **Window scale** to shrink or enlarge open DDOS desktop apps, the
 taskbar, and desktop shortcuts. The range is 75% through 125% in 5%
 steps. Use Left and Right to step through sizes, or press 0 or choose
@@ -74,6 +81,7 @@ name. It accepts LF and CRLF on input and saves with LF line endings.
 Closing or replacing a document with unsaved edits prompts for a decision.
 
 Snake uses the arrow keys or WASD to steer and Space to pause or resume.
+It wraps across all four edges. Hitting its own body ends the game.
 Use Start or Enter to begin. The game tracks your best score while its
 window is open.
 

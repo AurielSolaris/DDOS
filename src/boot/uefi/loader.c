@@ -146,6 +146,27 @@ static void copy_bytes(volatile uint8_t *to, const uint8_t *from, size_t size)
         to[i] = from[i];
 }
 
+static uint32_t firmware_ram_kib(size_t bytes, size_t stride)
+{
+    struct descriptor {
+        uint32_t type, reserved;
+        uint64_t physical, virtual_address, pages;
+    };
+    if (stride < sizeof(struct descriptor) || (stride & 7) || bytes > sizeof(memory_map))
+        return 0;
+    uint64_t total = 0;
+    for (size_t offset = 0; offset + stride <= bytes; offset += stride) {
+        const struct descriptor *item = (const void *)(memory_map + offset);
+        unsigned type = item->type;
+        if ((type >= 1 && type <= 7) || type == 9 || type == 10) {
+            if (item->pages > UINT32_MAX / 4 - total)
+                return UINT32_MAX;
+            total += item->pages;
+        }
+    }
+    return (uint32_t)total * 4;
+}
+
 status_t efi_main(handle_t image, struct system_table *system)
 {
     struct boot_services *boot = system->boot;
@@ -191,6 +212,7 @@ status_t efi_main(handle_t image, struct system_table *system)
         status = boot->get_memory_map(&bytes, memory_map, &key, &descriptor_size, &version);
         if (status)
             return status;
+        handoff->ram_kib = firmware_ram_kib(bytes, descriptor_size);
         status = boot->exit_boot_services(image, key);
         if (!status) {
             ((void (*)(uint8_t *))memory)(memory);

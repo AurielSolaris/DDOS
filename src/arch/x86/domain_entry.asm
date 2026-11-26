@@ -17,8 +17,8 @@ x86_has_write_protect:
     and eax, 1 << 18
     ret
 
-global x86_enable_sse
-x86_enable_sse:
+global x86_has_cpuid, x86_enable_sse
+x86_has_cpuid:
     pushfd
     pop ecx
     mov eax, ecx
@@ -30,7 +30,12 @@ x86_enable_sse:
     push ecx
     popfd
     xor eax, ecx
-    test eax, 1 << 21
+    and eax, 1 << 21
+    ret
+
+x86_enable_sse:
+    call x86_has_cpuid
+    test eax, eax
     jz .unsupported
     push ebx
     mov eax, 1
@@ -61,6 +66,45 @@ x86_save_fpu:
 x86_restore_fpu:
     mov eax, [esp + 4]
     fxrstor [eax]
+    ret
+
+; Destination is page-base relative. Align it before using streaming XMM stores.
+global x86_copy_scanline_sse2
+x86_copy_scanline_sse2:
+    push edi
+    push esi
+    mov edi, [esp + 12]
+    mov esi, [esp + 16]
+    mov ecx, [esp + 20]
+    cld
+.align:
+    test edi, 15
+    jz .vectors
+    test ecx, ecx
+    jz .done
+    movsd
+    dec ecx
+    jmp .align
+.vectors:
+    cmp ecx, 16
+    jb .tail
+    movdqu xmm0, [esi]
+    movdqu xmm1, [esi + 16]
+    movdqu xmm2, [esi + 32]
+    movdqu xmm3, [esi + 48]
+    movntdq [edi], xmm0
+    movntdq [edi + 16], xmm1
+    movntdq [edi + 32], xmm2
+    movntdq [edi + 48], xmm3
+    add esi, 64
+    add edi, 64
+    sub ecx, 16
+    jmp .vectors
+.tail:
+    rep movsd
+.done:
+    pop esi
+    pop edi
     ret
 
 section .domain_bridge progbits alloc exec nowrite align=16

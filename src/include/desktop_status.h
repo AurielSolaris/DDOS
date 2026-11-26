@@ -6,12 +6,21 @@
 enum {
     DDOS_GET_STATUS = 0x444f, DDOS_DESKTOP_POWER = 0x4450, DDOS_UI_SCALE = 0x4451,
     DDOS_FB_PRESENT = 0x4644, DDOS_UI_FONT = 0x4452,
+    DDOS_GET_GRAPHICS = 0x4453, DDOS_UI_RENDER = 0x4454,
+    DDOS_RENDER_AUTO = 1, DDOS_RENDER_SOFTWARE = 2, DDOS_RENDER_SSE2 = 3,
+    DDOS_GRAPHICS_SHADOW = 1, DDOS_GRAPHICS_SSE2 = 2,
     DDOS_FONT_PATH = 64,
     DDOS_SCALE_MIN = 75, DDOS_SCALE_MAX = 125, DDOS_SCALE_DEFAULT = 100,
     DDOS_POWER_OFF = 1, DDOS_RESTART = 2, DDOS_STATUS_TASKS = 24,
 };
 
 #define DDOS_DEFAULT_FONT "B:/fonts/Inter.woff"
+
+struct ddos_graphics_status {
+    uint32_t capabilities, requested_mode, active_mode;
+    uint16_t pci_vendor, pci_device;
+    char cpu[49];
+};
 
 struct ddos_desktop_task {
     uint32_t pid, mapped_kib;

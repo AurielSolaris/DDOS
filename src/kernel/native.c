@@ -85,6 +85,7 @@ struct native_runtime {
     struct local_socket sockets[PIPE_COUNT];
     char tmp_name[32];
     char ui_font[DDOS_FONT_PATH];
+    struct ddos_graphics_status graphics;
     uint8_t tmp_data[256];
     unsigned tmp_size;
 };
@@ -1647,7 +1648,8 @@ static int framebuffer_ioctl(struct process *p, const struct native_frame *r)
         if (x >= fb->width || y >= fb->height || !width || !height ||
             width > fb->width - x || height > fb->height - y)
             return -EINVAL;
-        native_fb_present(x, y, width, height);
+        native_fb_present(x, y, width, height,
+                          width >= 16 && runtime->graphics.active_mode == DDOS_RENDER_SSE2);
         return 0;
     }
     unsigned size = r->ecx == 0x4600 ? 160 : r->ecx == 0x4602 ? 68 : 0;
@@ -1718,6 +1720,28 @@ static int syscall(struct process *p)
     struct native_frame *r = &p->space.frame;
     switch (r->eax) {
     case DDOS_GET_STATUS: return desktop_status(p, r->ebx);
+    case DDOS_GET_GRAPHICS: {
+        uint8_t *out = user(p, r->ebx, sizeof(runtime->graphics), true);
+        if (!out)
+            return -EFAULT;
+        copy(out, (const uint8_t *)&runtime->graphics, sizeof(runtime->graphics));
+        return 0;
+    }
+    case DDOS_UI_RENDER: {
+        unsigned mode = r->ebx;
+        if (!mode)
+            return runtime->graphics.requested_mode;
+        unsigned required = DDOS_GRAPHICS_SHADOW | DDOS_GRAPHICS_SSE2;
+        bool available = (runtime->graphics.capabilities & required) == required;
+        if (mode > DDOS_RENDER_SSE2)
+            return -EINVAL;
+        if (mode == DDOS_RENDER_SSE2 && !available)
+            return -ENODEV;
+        runtime->graphics.requested_mode = mode;
+        runtime->graphics.active_mode = available && mode != DDOS_RENDER_SOFTWARE
+            ? DDOS_RENDER_SSE2 : DDOS_RENDER_SOFTWARE;
+        return 0;
+    }
     case DDOS_UI_FONT: {
         uint8_t *name = user(p, r->ebx, DDOS_FONT_PATH, !r->ecx);
         if (!name)
@@ -1956,6 +1980,11 @@ static void native_session(uint32_t directory, const char *path, bool quiet, boo
     runtime->ui_scale = DDOS_SCALE_DEFAULT;
     copy((uint8_t *)runtime->ui_font, (const uint8_t *)DDOS_DEFAULT_FONT, sizeof(DDOS_DEFAULT_FONT));
     runtime->installed_kib = platform_ram_kib();
+    native_graphics_detect(&runtime->graphics);
+    runtime->graphics.requested_mode = DDOS_RENDER_AUTO;
+    unsigned graphics = DDOS_GRAPHICS_SHADOW | DDOS_GRAPHICS_SSE2;
+    runtime->graphics.active_mode = (runtime->graphics.capabilities & graphics) == graphics
+        ? DDOS_RENDER_SSE2 : DDOS_RENDER_SOFTWARE;
     struct process *initial = &runtime->tasks[0];
     initial->cwd = directory;
     initial->cwd_volume = VFS_D;

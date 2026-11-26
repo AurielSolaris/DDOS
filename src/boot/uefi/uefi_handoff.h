@@ -14,7 +14,7 @@ struct uefi_handoff {
     uint32_t format;
     uint32_t stride;  /* Pixels per scanline. */
     uint32_t domain_arena;
-    uint32_t domain_bytes;
+    uint32_t domain_bytes, ram_kib;
 };
 
 #endif
