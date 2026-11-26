@@ -20,22 +20,30 @@ if command -v cygpath >/dev/null 2>&1; then
 fi
 
 cd "$source_dir/src"
-# Build a separate server and client without external graphics libraries.
-sed -E '/^(MICROWIN|MICROWINDEMO|NANOXDEMO|NUKLEARUI|NANOWM|HAVE_SHAREDMEM_SUPPORT|HAVE_PNG_SUPPORT|HAVE_PCF_SUPPORT|HAVE_PCFGZ_SUPPORT|HAVE_FREETYPE_2_SUPPORT|HAVE_FNTGZ_SUPPORT|VTSWITCH|HAVETEXTMODE)[[:space:]]*=/s/= Y/= N/' \
+# Build a separate server and client for the DDOS framebuffer.
+sed -E -e '/^MOUSE[[:space:]]*=/s/= DEVMICEMOUSE/= NOMOUSE/' \
+    -e '/^KEYBOARD[[:space:]]*=/s/= SCANKBD/= NOKBD/' \
+    -e '/^(MICROWIN|MICROWINDEMO|NANOXDEMO|NUKLEARUI|NANOWM|HAVE_SHAREDMEM_SUPPORT|HAVE_PNG_SUPPORT|HAVE_PCF_SUPPORT|HAVE_PCFGZ_SUPPORT|HAVE_FREETYPE_2_SUPPORT|HAVE_FNTGZ_SUPPORT|VTSWITCH|HAVETEXTMODE)[[:space:]]*=/s/= Y/= N/' \
     Configs/config.linux-fb > config.ddos
 compiler="clang -target i686-unknown-linux-musl --sysroot='$sysroot' --gcc-install-dir='$gcc_install_dir'"
 # The server uses nxSysColors even with the internal window manager disabled.
 # Link that table from the client library and discard its unused functions.
-make -j 8 "CONFIG=$PWD/config.ddos" "COMPILER=$compiler -ffunction-sections" ARCHIVER=llvm-ar \
+make -j 8 "CONFIG=$PWD/config.ddos" "COMPILER=$compiler -ffunction-sections -DAUTO_START_SERVER=0" ARCHIVER=llvm-ar \
     'LDFLAGS=-fuse-ld=lld -static -Wl,--gc-sections -lm' \
     'NANOXSERVERLIBS=../lib/libnano-X.a' default
 clang -target i686-unknown-linux-musl --sysroot="$sysroot" -Os -Iinclude -Inanox \
     -c demos/nanox/nanowm.c -o bin/nanowm.o
 clang -target i686-unknown-linux-musl --sysroot="$sysroot" --gcc-install-dir="$gcc_install_dir" \
     -fuse-ld=lld -static bin/nanowm.o lib/libnano-X.a -lm -o bin/nanowm
+taskbar="$root/user/desktop/taskbar.c"
+if command -v cygpath >/dev/null 2>&1; then
+    taskbar="$(cygpath -m "$taskbar")"
+fi
+clang -target i686-unknown-linux-musl --sysroot="$sysroot" -Os -Iinclude     -c "$taskbar" -o bin/taskbar.o
+clang -target i686-unknown-linux-musl --sysroot="$sysroot" --gcc-install-dir="$gcc_install_dir"     -fuse-ld=lld -static bin/taskbar.o lib/libnano-X.a -lm -o bin/taskbar
 output="$build_dir/microwindows"
 mkdir -p "$output"
-for name in nano-X nanowm; do
+for name in nano-X nanowm taskbar; do
     cp "bin/$name" "$output/$name"
     llvm-strip "$output/$name"
 done

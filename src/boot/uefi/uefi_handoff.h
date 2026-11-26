@@ -5,7 +5,7 @@
 
 /* Offsets from the base of the kernel's preallocated memory. */
 #define DDOS_HANDOFF_OFFSET 0x10000u
-#define DDOS_DISK_OFFSET    0x2c000u
+#define DDOS_DISK_OFFSET    0x30000u
 
 struct uefi_handoff {
     uint32_t framebuffer;

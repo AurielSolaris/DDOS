@@ -51,7 +51,12 @@ def find_firmware(qemu):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--uefi", action="store_true", help="boot with x64 UEFI and GOP")
+    parser.add_argument("--debug-log", type=Path, help="write guest debug console output to a file")
+    parser.add_argument("--system-image", type=Path, default=SYSTEM, help="ext2 system image to boot")
     args = parser.parse_args()
+    debug = ()
+    if args.debug_log:
+        debug = ("-debugcon", f"file:{args.debug_log.resolve().as_posix()}")
 
     if not (ROOT / (EFI if args.uefi else IMAGE)).is_file():
         raise SystemExit("DDOS image is missing. Run python build.py first.")
@@ -62,14 +67,21 @@ def main():
     data_disk = ()
     if (ROOT / DATA).is_file():
         data_disk = ("-drive", f"file={DATA.as_posix()},format=raw,if=ide,index=1")
-    if (ROOT / SYSTEM).is_file():
-        data_disk += ("-drive", f"file={SYSTEM.as_posix()},format=raw,if=ide,index=2")
     try:
-        if args.uefi:
-            code, variables = find_firmware(qemu)
-            code_path = code.as_posix().replace(",", ",,")
-            with tempfile.TemporaryDirectory(prefix="ddos-qemu-") as scratch:
-                scratch = Path(scratch)
+        with tempfile.TemporaryDirectory(prefix="ddos-qemu-") as scratch:
+            scratch = Path(scratch)
+            system_image = ROOT / args.system_image
+            if system_image.is_file():
+                # Keep QEMU from locking the rebuildable system image on Windows.
+                system_copy = scratch / "system.ext2"
+                shutil.copyfile(system_image, system_copy)
+                system_option = system_copy.as_posix().replace(",", ",,")
+                data_disk += ("-drive", f"file={system_option},format=raw,if=ide,index=2")
+            elif args.system_image != SYSTEM:
+                raise SystemExit(f"DDOS system image was not found: {system_image}")
+            if args.uefi:
+                code, variables = find_firmware(qemu)
+                code_path = code.as_posix().replace(",", ",,")
                 vars_path = Path(shutil.copyfile(variables, scratch / "vars.fd"))
                 esp = scratch / "esp"
                 shutil.copytree(ROOT / "build/uefi", esp)
@@ -79,12 +91,15 @@ def main():
                     qemu,
                     "-drive", f"if=pflash,unit=0,format=raw,readonly=on,file={code_path}",
                     "-drive", f"if=pflash,unit=1,format=raw,file={vars_option}",
-                    "-drive", f"file=fat:rw:{esp_option},format=raw,if=ide,index=0", *data_disk,
+                    "-drive", f"file=fat:rw:{esp_option},format=raw,if=ide,index=0", *data_disk, *debug,
                 )
-                return subprocess.run(command, cwd=ROOT).returncode
-        command = (qemu, "-drive", f"file={IMAGE.as_posix()},format=raw,if=floppy",
-                   "-boot", "a", *data_disk)
-        return subprocess.run(command, cwd=ROOT).returncode
+            else:
+                boot_image = scratch / "ddos.img"
+                shutil.copyfile(ROOT / IMAGE, boot_image)
+                boot_option = boot_image.as_posix().replace(",", ",,")
+                command = (qemu, "-drive", f"file={boot_option},format=raw,if=floppy",
+                           "-boot", "a", *data_disk, *debug)
+            return subprocess.run(command, cwd=ROOT).returncode
     except OSError as error:
         raise SystemExit(f"Could not launch QEMU: {error}") from error
 

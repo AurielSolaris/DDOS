@@ -5,8 +5,12 @@
 
 enum { BLOCK = 1024, SUPER = 1, GROUP = 2, INODE_SIZE = 128 };
 
-static uint8_t super[BLOCK], group[BLOCK], block_bits[BLOCK], inode_bits[BLOCK];
-static uint8_t contents[BLOCK];
+#define EXT2_WORKSPACE __attribute__((section(".fs_workspace")))
+static uint8_t super[BLOCK] EXT2_WORKSPACE;
+static uint8_t group[BLOCK] EXT2_WORKSPACE;
+static uint8_t block_bits[BLOCK] EXT2_WORKSPACE;
+static uint8_t inode_bits[BLOCK] EXT2_WORKSPACE;
+static uint8_t contents[BLOCK] EXT2_WORKSPACE;
 static unsigned bitmap_block, bitmap_inode, first_data;
 
 static unsigned record_size(unsigned name)

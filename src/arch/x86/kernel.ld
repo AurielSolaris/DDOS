@@ -24,7 +24,7 @@ SECTIONS
     /* One dedicated entry stack, below the ordinary kernel stack. */
     __domain_stack_top = 0xe000;
     /* Shared firmware layout, above the BIOS DOS arena and diagnostic pages. */
-    .fs_workspace 0x2a000 (NOLOAD) : { *(.fs_workspace) }
-    ASSERT(SIZEOF(.fs_workspace) <= 0x2000, "filesystem workspace exceeds reserved memory")
+    .fs_workspace 0x2c000 (NOLOAD) : { *(.fs_workspace) }
+    ASSERT(SIZEOF(.fs_workspace) <= 0x4000, "filesystem workspace exceeds reserved memory")
     /DISCARD/ : { *(.eh_frame*) *(.comment) *(.note*) }
 }

@@ -7,7 +7,7 @@
 enum {
     NATIVE_PAGE = 4096, NATIVE_PAGES = 256,
     NATIVE_FB_OFFSET = NATIVE_PAGES * NATIVE_PAGE,
-    NATIVE_FB_MAX = 3 * 1024 * 1024,
+    NATIVE_FB_MAX = 8 * 1024 * 1024,
     NATIVE_TRAP = 0x40000000,
 };
 
@@ -45,6 +45,8 @@ bool native_load_elf(struct native_space *, const struct ext2_inode *, struct na
 uint32_t native_step(struct native_space *);
 void native_clock_start(void);
 uint32_t native_millis(void);
+uint32_t native_epoch(void);
+void native_desktop(uint32_t directory);
 void native_start(uint32_t directory, const char *path, bool quiet);
 
 #endif

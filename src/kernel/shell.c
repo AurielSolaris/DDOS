@@ -281,7 +281,8 @@ static void help(void)
           "  CLS                Clear the screen\r\n"
           "  ECHO [text]        Print text\r\n"
           "  VER                Show version and CPU mode\r\n"
-          "  RUN                Run the built-in native C program\r\n"
+          "  RUN [path]         Run a native ELF or the C demo\r\n"
+          "  NANOWM             Start the Nano-X desktop (UEFI)\r\n"
           "  RINGS              Test x86 privilege domains\r\n"
           "  HELP               Show this command list\r\n");
     if (platform_can_run())
@@ -300,6 +301,8 @@ static void command(char *line)
         print("DDOS (DOS Derived OS), MS-DOS 4.00 port\r\n32-bit protected mode\r\n");
     } else if (equals(line, "RUN")) {
         native_start(directory_for('D'), *arguments ? arguments : "/bin/ddosapp", false);
+    } else if (equals(line, "NANOWM")) {
+        native_desktop(directory_for('D'));
     } else if (equals(line, "RINGS")) {
         x86_domains_test();
     } else if (equals(line, "CLS")) {
@@ -340,7 +343,6 @@ void kernel_main(void)
     print("DDOS - DOS Derived OS\r\n");
     if (vfs_select(VFS_D))
         print(ext2_writable() ? "D: ext2\r\n" : "D: ext2 (read-only)\r\n");
-    native_start(EXT2_ROOT, "/bin/runit", true);
     for (;;) {
         char line[128];
         unsigned length = 0;

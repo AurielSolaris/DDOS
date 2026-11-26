@@ -107,7 +107,11 @@ def main():
     parser.add_argument("--busybox", type=Path,
                         help="install an i386 static BusyBox as B:/bin/busybox and B:/bin/sh")
     parser.add_argument("--runit", type=Path, help="directory containing static runit tools")
-    parser.add_argument("--microwindows", type=Path, help="directory containing static nano-X and nanowm")
+    parser.add_argument("--microwindows", type=Path, help="directory containing static Nano-X desktop programs")
+    parser.add_argument("--desktop", action="store_true",
+                        help="require a NanoWM desktop in the system image")
+    parser.add_argument("--system-image", type=Path, default=BUILD / "system.ext2",
+                        help="output path for the ext2 system image")
     args = parser.parse_args()
     if args.busybox is None and (BUILD / "busybox").is_file():
         args.busybox = BUILD / "busybox"
@@ -116,7 +120,14 @@ def main():
         args.runit = BUILD / "runit"
     if args.microwindows is None and (BUILD / "microwindows" / "nanowm").is_file():
         args.microwindows = BUILD / "microwindows"
+    if args.desktop and (args.microwindows is None or
+                         any(not (args.microwindows / name).is_file()
+                             for name in ("nano-X", "nanowm", "taskbar"))):
+        parser.error("Desktop binaries are missing. Run sh tools/build-microwindows.sh or pass --microwindows.")
+    if args.system_image.resolve() in (BUILD / "data.ext2", BUILD / "ddos.img"):
+        parser.error("--system-image must be separate from the persistent data and boot images")
     BUILD.mkdir(exist_ok=True)
+    args.system_image.parent.mkdir(parents=True, exist_ok=True)
     native_app = build_native_app(args.app.resolve())
     run("nasm", "-f", "bin", "src/boot/bios/sector.asm", "-o", "build/boot.bin")
     run("nasm", "-f", "elf32", "src/boot/bios/platform.asm", "-o", "build/platform.o")
@@ -128,11 +139,16 @@ def main():
     try:
         image = make_boot_image((BUILD / "boot.bin").read_bytes(),
                                 (BUILD / "kernel.bin").read_bytes())
-        build_system(BUILD / "system.ext2", native_app, args.file, args.busybox, args.runit, args.microwindows)
+        build_system(args.system_image, native_app, args.file, args.busybox, args.runit, args.microwindows)
+    except PermissionError as error:
+        if getattr(error, "winerror", None) in (5, 32):
+            parser.error(f"Windows could not replace {args.system_image}. "
+                         "Close the VM using it or pass --system-image with a different path.")
+        raise
     except (OSError, ValueError) as error:
         parser.error(str(error))
     (BUILD / "ddos.img").write_bytes(image)
-    print("Built build/ddos.img and build/system.ext2")
+    print(f"Built build/ddos.img and {args.system_image}")
     build_uefi(objects)
     if create_if_missing(BUILD / "data.ext2"):
         print("Created build/data.ext2")

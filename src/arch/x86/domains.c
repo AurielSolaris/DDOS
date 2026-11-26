@@ -21,6 +21,7 @@ struct domain_memory {
     uint32_t directories[2][ENTRIES];
     uint32_t kernel_tables[2][ENTRIES];
     uint32_t domain_tables[2][ENTRIES];
+    uint32_t framebuffer_tables[2][ENTRIES];
     uint8_t code[2][PAGE];
     uint8_t data[2][PAGE];
 };
@@ -281,6 +282,20 @@ uint32_t native_step(struct native_space *app)
         uint32_t offset = (slot - NATIVE_PAGES) * PAGE;
         memory->domain_tables[1][slot] = app->fb_access && offset < framebuffer.size ?
             (framebuffer.physical + offset) | app->fb_access | 0x18 : 0;
+    }
+    for (unsigned table = 0; table < 2; ++table) {
+        unsigned start = (table + 1) * ENTRIES * PAGE - NATIVE_FB_OFFSET;
+        uint32_t *pages = memory->framebuffer_tables[table];
+        uint32_t *directory = &memory->directories[1][(DOMAIN_CODE >> 22) + table + 1];
+        *directory = 0;
+        if (!app->fb_access || framebuffer.size <= start)
+            continue;
+        for (unsigned i = 0; i < ENTRIES; ++i) {
+            unsigned offset = start + i * PAGE;
+            pages[i] = offset < framebuffer.size ?
+                (framebuffer.physical + offset) | app->fb_access | 0x18 : 0;
+        }
+        *directory = physical(pages) | PRESENT | WRITABLE;
     }
     prepare_entry(2);
     if (sse)

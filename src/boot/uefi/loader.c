@@ -90,7 +90,8 @@ _Static_assert(offsetof(struct boot_services, locate_protocol) == 320, "UEFI loc
 static int usable(const struct mode_info *info, size_t bytes)
 {
     return bytes >= sizeof(*info) && info->format <= 1 && info->stride >= info->width &&
-           info->width >= 640 && info->height >= 480;
+           info->width >= 640 && info->height >= 480 &&
+           (uint64_t)info->stride * 4 * info->height <= 8u * 1024u * 1024u;
 }
 
 static int framebuffer(struct boot_services *boot, struct uefi_handoff *handoff)
@@ -99,20 +100,23 @@ static int framebuffer(struct boot_services *boot, struct uefi_handoff *handoff)
     if (boot->locate_protocol(&gop_guid, 0, &protocol))
         return 0;
     struct graphics *gop = protocol;
-    uint32_t selected = gop->mode->count;
+    uint32_t selected = gop->mode->count, rank = 0, pixel_count = 0;
     for (uint32_t i = 0; i < gop->mode->count; ++i) {
         size_t bytes;
         struct mode_info *info;
         if (gop->query(gop, i, &bytes, &info))
             continue;
-        int valid = usable(info, bytes);
-        int preferred = valid && info->width == 1024 && info->height == 768;
-        if (valid && (selected == gop->mode->count || i == gop->mode->current ||
-                      preferred))
-            selected = i;
+        if (usable(info, bytes)) {
+            uint32_t pixels = info->width * info->height;
+            uint32_t score = info->width >= 1280 && info->height >= 720 ? 2 : 1;
+            if (score > rank || (score == rank && (score == 2 ? pixels < pixel_count :
+                                                                 pixels > pixel_count))) {
+                selected = i;
+                rank = score;
+                pixel_count = pixels;
+            }
+        }
         boot->free_pool(info);
-        if (preferred)
-            break;
     }
     if (selected >= gop->mode->count || gop->set(gop, selected))
         return 0;

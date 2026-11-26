@@ -1305,16 +1305,26 @@ static int sleep_task(struct process *p, const struct native_frame *r)
 
 static int clock_time(struct process *p, const struct native_frame *r)
 {
-    if (r->ebx != 1 && r->ebx != 4)
+    bool timeval = r->eax == 78;
+    if (!timeval && r->ebx != 0 && r->ebx != 1 && r->ebx != 4)
         return -EINVAL;
+    bool realtime = timeval || !r->ebx;
+    uint32_t base = realtime ? native_epoch() : 0;
+    if (realtime && !base)
+        return -EIO;
     bool wide = r->eax == 403;
-    uint8_t *time = user(p, r->ecx, wide ? 16 : 8, true);
+    if (timeval && !r->ebx)
+        return 0;
+    uint8_t *time = user(p, timeval ? r->ebx : r->ecx, wide ? 16 : 8, true);
     if (!time)
         return -EFAULT;
     if (wide)
         zero(time, 16);
-    write32(time, runtime->now / 1000);
-    write32(time + (wide ? 8 : 4), (runtime->now % 1000) * 1000000);
+    uint32_t seconds = base + runtime->now / 1000;
+    if (!wide && seconds > INT32_MAX)
+        return -75;
+    write32(time, seconds);
+    write32(time + (wide ? 8 : 4), (runtime->now % 1000) * (timeval ? 1000 : 1000000));
     return 0;
 }
 
@@ -1580,7 +1590,7 @@ static int syscall(struct process *p)
     case 142: return select_files(p, r);
     case 168: return poll_files(p, r);
     case 162: case 267: case 407: return sleep_task(p, r);
-    case 265: case 403: return clock_time(p, r);
+    case 78: case 265: case 403: return clock_time(p, r);
     case 146: {
         if (r->edx > 16)
             return -EINVAL;
@@ -1664,7 +1674,34 @@ static void dispatch(struct process *p)
         p->state = RUNNABLE;
 }
 
-void native_start(uint32_t directory, const char *path, bool quiet)
+static int desktop_task(struct process *server, unsigned slot, const char *path)
+{
+    struct process *child = &runtime->tasks[slot];
+    child->cwd = server->cwd;
+    child->cwd_volume = server->cwd_volume;
+    child->pid = runtime->next_pid++;
+    child->parent = server->pid;
+    child->session = server->session;
+    child->group = server->group;
+    for (unsigned i = 0; i < 3; ++i) {
+        struct file *file = fd(server, i);
+        if (file) {
+            ++file->refs;
+            child->files[i] = server->files[i];
+        }
+    }
+    native_space_init(&child->space, slot);
+    int error = exec_image(child, path, 0, 0);
+    if (!error)
+        child->state = RUNNABLE;
+    else {
+        for (unsigned i = 0; i < 3; ++i)
+            close_fd(child, i);
+    }
+    return error;
+}
+
+static void native_session(uint32_t directory, const char *path, bool quiet, bool desktop)
 {
     runtime = native_init();
     if (!runtime) {
@@ -1685,6 +1722,11 @@ void native_start(uint32_t directory, const char *path, bool quiet)
     }
     native_space_init(&initial->space, 0);
     int status = exec_image(initial, path, 0, 0);
+    bool launch_manager = desktop && !status;
+    if (desktop && status == -ENOENT) {
+        path = "/bin/nanowm";
+        status = exec_image(initial, path, 0, 0);
+    }
     if (status) {
         if (!quiet || (status != -ENOENT && status != -ENODEV)) {
             print("Cannot load ");
@@ -1697,6 +1739,26 @@ void native_start(uint32_t directory, const char *path, bool quiet)
     native_clock_start();
     unsigned slot = 0;
     while (initial->state != ZOMBIE) {
+        if (desktop && (platform_try_getc() & 0xff) == 27)
+            return;
+        if (launch_manager) {
+            for (unsigned i = 0; i < PIPE_COUNT; ++i) {
+                const struct local_socket *listener = &runtime->sockets[i];
+                if (!listener->live || !listener->backlog || !same(listener->name, "/tmp/.nano-X"))
+                    continue;
+                if (desktop_task(initial, 1, "/bin/nanowm")) {
+                    print("Cannot load /bin/nanowm\r\n");
+                    return;
+                }
+                int bar = desktop_task(initial, 2, "/bin/taskbar");
+                if (bar && bar != -ENOENT)
+                    print("Cannot load /bin/taskbar\r\n");
+                launch_manager = false;
+                break;
+            }
+        }
+        if (desktop && runtime->tasks[1].state == ZOMBIE)
+            return;
         runtime->now = native_millis();
         bool waiting = false;
         for (unsigned i = 0; i < TASKS; ++i) {
@@ -1762,4 +1824,20 @@ void native_start(uint32_t directory, const char *path, bool quiet)
         }
         slot = (slot + 1) % TASKS;
     }
+}
+
+void native_start(uint32_t directory, const char *path, bool quiet)
+{
+    native_session(directory, path, quiet, false);
+}
+
+void native_desktop(uint32_t directory)
+{
+    if (!native_framebuffer()) {
+        print("NanoWM needs UEFI GOP. Boot with python boot.py --uefi.\r\n");
+        return;
+    }
+    print("Starting NanoWM. Press Esc to return to DDOS.\r\n");
+    native_session(directory, "/bin/nano-X", false, true);
+    platform_clear();
 }

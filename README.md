@@ -16,6 +16,23 @@ python boot.py          # BIOS with DOS COM and MZ EXE execution
 python boot.py --uefi   # x64 UEFI with GOP graphics
 ```
 
+Build and boot the UEFI desktop with these commands.
+```text
+sh tools/build-microwindows.sh
+python build.py --desktop
+python boot.py --uefi
+```
+
+At the DDOS prompt, enter `NANOWM`. DDOS starts Nano-X and launches
+NanoWM and the taskbar once the server is listening. The bottom bar shows
+the date and time in UTC from the PC clock. Press Esc to return to the
+prompt. Desktop keyboard and mouse input and automatic login startup
+are pending. Add `--debug-log build/qemu.log`
+to the boot command to capture guest diagnostics. The launcher copies the
+system image into its temporary directory so you can rebuild while QEMU
+runs. If an older VM holds the original file open, pass the same
+`--system-image build/system-desktop.ext2` option to both scripts.
+
 The QEMU launcher attaches three images. The x64 UEFI boot file is
 built at `build/uefi/EFI/BOOT/BOOTX64.EFI`. The kernel exposes a four-letter
 mount table.
@@ -77,7 +94,7 @@ IDE master and the data image on the primary IDE slave.
 | Boot path | Firmware entry and handoff |
 | --- | --- |
 | BIOS | A NASM boot sector loads the kernel from reserved FAT12 sectors, installs a GDT, and enables protected mode. The kernel uses 32-bit code and data segments. The BIOS bridge temporarily returns to real mode for firmware calls and DOS COM or MZ execution. |
-| UEFI | `BOOTX64.EFI` is a 64-bit UEFI application. It queries GOP, prefers 1024x768 when available, and passes the selected linear framebuffer to the kernel. After `ExitBootServices`, the assembly entry switches to 32-bit compatibility code, disables paging, clears long mode and PAE, then enters the 32-bit protected-mode kernel. |
+| UEFI | `BOOTX64.EFI` is a 64-bit UEFI application. It queries GOP, prefers the smallest supported mode at or above 1280x720, and passes the selected linear framebuffer to the kernel. After `ExitBootServices`, the assembly entry switches to 32-bit compatibility code, disables paging, clears long mode and PAE, then enters the 32-bit protected-mode kernel. |
 
 The kernel starts with paging and PAE inactive on both paths. The privilege
 self-test temporarily turns on non-PAE paging. IA32 (32-bit) UEFI firmware
@@ -132,7 +149,7 @@ memory mapping, TLS setup, and basic memory and string routines.
 | Signals | Standard signals with `rt_sigaction`, `rt_sigprocmask`, legacy `sigreturn`, and `kill`. Supports simple handlers and SIGCHLD delivery. |
 | Memory and TLS | `brk`, `mmap2`, `munmap`, `set_thread_area`, and `set_tid_address` |
 | Files and descriptors | `open`, `openat`, `read`, `write`, `writev`, `close`, `dup`, `dup2`, `_llseek`, `stat64` family, `chdir`, `mkdir`, and `mkdirat`. Path syscalls with a directory descriptor accept `AT_FDCWD`. |
-| IPC and timing | `pipe`, `pipe2`, `poll`, `_newselect`, relative `nanosleep`, and monotonic `clock_gettime`. `fcntl` supports descriptor duplication, nonblocking I/O, append, and close-on-exec. |
+| IPC and timing | `pipe`, `pipe2`, `poll`, `_newselect`, relative `nanosleep`, and monotonic or RTC-backed `clock_gettime`. `fcntl` supports descriptor duplication, nonblocking I/O, append, and close-on-exec. |
 
 The scheduler switches among up to eight Ring 2 processes at syscalls.
 Each task has private memory, register state, and TLS. Forked descriptors
@@ -194,20 +211,18 @@ in `B:/bin`. Use `--busybox FILE`, `--runit DIR`, or `--microwindows DIR`
 to use explicitly supplied binaries. BusyBox provides `busybox` and
 `sh` with the [Hush and applet configuration](tools/busybox.config).
 The runit tools are `runit`, `runit-init`, `runsvdir`, `runsv`, and `sv`.
-The graphics build provides separate `nano-X` and `nanowm` binaries.
+The graphics build provides separate `nano-X`, `nanowm`, and
+`taskbar` binaries.
 
 The native loader also accepts scripts whose shebang names an absolute
-ELF interpreter path. The image includes executable stages under
-`B:/etc/runit` and the login shell service in `B:/etc/service/shell/run`. The login profile attempts
-to start Nano-X and NanoWM when `/dev/fb0` is present. On boot, DDOS
-attempts `/bin/runit` with `PATH=/bin` and `D:/` as the working directory
-and falls back to the DDOS prompt when runit exits.
+ELF interpreter path. The image includes executable runit stages in
+`B:/etc/runit`, the login shell service in `B:/etc/service/shell/run`,
+and a login profile that checks for `/dev/fb0`.
 
-Boot supervision is still pending. The boot attempt runs in the
-foreground runtime as PID 2, so runit exits at its PID 1 check. Writable
-service state, directory enumeration, terminal control, and `getcwd`
-are still needed for the full login flow. The Nano-X transport and GOP
-device can be tested independently of automatic NanoWM startup.
+Boot currently goes directly to the DDOS prompt. Runit remains installed
+in B: for development. PID 1 supervision needs writable service state,
+directory enumeration, terminal control, and `getcwd`. Use `NANOWM`
+from the DDOS prompt to open the UEFI desktop.
 
 ## DOS syscall interface
 
@@ -268,7 +283,7 @@ real-mode bridge. The UEFI console writes pixels directly to the GOP
 framebuffer and polls a PS/2 keyboard. Native programs can use
 `/dev/console` or `/dev/tty` for console I/O. `/dev/fb0` supports Linux
 `FBIOGET_FSCREENINFO`, `FBIOGET_VSCREENINFO`, and a shared full-device
-mapping for a page-aligned GOP framebuffer of up to 3 MiB. Direct
+mapping for a page-aligned GOP framebuffer of up to 8 MiB. Direct
 keyboard and mouse nodes are pending. The graphics console uses
 the public-domain [font8x8 bitmap font](https://github.com/dhepper/font8x8).
 
