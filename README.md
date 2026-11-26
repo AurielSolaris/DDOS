@@ -12,7 +12,7 @@ on Windows.
 
 ```powershell
 python build.py
-python boot.py          # BIOS with DOS COM execution
+python boot.py          # BIOS with DOS COM and MZ EXE execution
 python boot.py --uefi   # x64 UEFI with GOP graphics
 ```
 
@@ -28,8 +28,9 @@ mount table.
 | `D:/` | Persistent ext2 data image at `build/data.ext2`. Rebuilding preserves it. |
 
 Native absolute paths default to `B:/`. Explicit drive-qualified paths
-select their mount. `/dev/null`, `/dev/zero`, and `/dev/console` use kernel
-nodes. `/tmp` supports a small RAM file for the current native program.
+select their mount. `/dev/null` and `/dev/zero` use kernel nodes. `/dev/console` and
+`/dev/tty` both connect to the DDOS console. UEFI exposes `/dev/fb0`
+when the GOP framebuffer fits the mapping described below. `/tmp` supports a small RAM file shared by tasks in the current native session.
 Relative paths follow the program's current directory. Programs start
 in the shell's ext2 data directory when launched with `RUN`.
 
@@ -75,7 +76,7 @@ IDE master and the data image on the primary IDE slave.
 
 | Boot path | Firmware entry and handoff |
 | --- | --- |
-| BIOS | A NASM boot sector loads the kernel from reserved FAT12 sectors, installs a GDT, and enables protected mode. The kernel uses 32-bit code and data segments. The BIOS bridge temporarily returns to real mode for firmware calls and DOS COM execution. |
+| BIOS | A NASM boot sector loads the kernel from reserved FAT12 sectors, installs a GDT, and enables protected mode. The kernel uses 32-bit code and data segments. The BIOS bridge temporarily returns to real mode for firmware calls and DOS COM or MZ execution. |
 | UEFI | `BOOTX64.EFI` is a 64-bit UEFI application. It queries GOP, prefers 1024x768 when available, and passes the selected linear framebuffer to the kernel. After `ExitBootServices`, the assembly entry switches to 32-bit compatibility code, disables paging, clears long mode and PAE, then enters the 32-bit protected-mode kernel. |
 
 The kernel starts with paging and PAE inactive on both paths. The privilege
@@ -97,8 +98,8 @@ Run `RINGS` under BIOS or UEFI to exercise the 32-bit privilege setup.
 Rings 1 and 2 each use a private CR3 page directory and bounded, non-flat
 code and data/stack segments. Both run with `IOPL=0`. The TSS bitmap grants
 port access for Ring 1 while `CLI` stays privileged. Neither directory maps
-the ordinary kernel. The shared transition area contains one read-only
-code page, one read-only GDT/IDT/TSS and context page, and one dedicated
+the ordinary kernel. The shared transition area contains a read-only
+page with the entry code and GDT/IDT/TSS metadata, plus a dedicated
 interrupt stack page. `CR0.WP` protects the shared read-only pages even
 though x86 paging treats Rings 1 and 2 as supervisor. The test uses 4 KiB
 non-PAE pages and requires a 486 or newer CPU.
@@ -109,7 +110,7 @@ With `EAX=1`, it exits the probe with the value in `EBX`. Other calls
 return `-ENOSYS`. A fault returns control to the Ring 0 test harness.
 
 These domains run built-in probes, and Ring 2 also runs the native C program. The existing device drivers
-still run in Ring 0, and the BIOS COM loader uses its separate real-mode
+still run in Ring 0, and the BIOS DOS loader uses its separate real-mode
 path. Preemptive scheduling and driver IPC are pending.
 
 ## Native C runtime
@@ -125,44 +126,97 @@ Native `INT 80h` uses the Linux i386 syscall numbers and register order.
 The C library covers file I/O, vector writes, seek, heap and anonymous
 memory mapping, TLS setup, and basic memory and string routines.
 
-The kernel implements `exit`, `exit_group`, `set_thread_area`,
-`set_tid_address`, `execve`, `chdir`, `brk`, `mmap2`, `munmap`,
-`openat`, `read`, `write`, `writev`, `close`, `_llseek`, `fstat64`,
-and `fstatat64` for this single-program runtime. `openat` and `fstatat64`
-support `AT_FDCWD`. `mmap2` supports bounded read/write anonymous memory.
-`set_thread_area` supplies one DPL-2 data descriptor. The DDOS C wrapper
-loads it with selector RPL 2. Upstream musl's i386 startup uses RPL 3,
-which needs an adaptation for DDOS.
+| Interface | Implemented behavior |
+| --- | --- |
+| Processes | `fork`, `execve`, `wait4` for a child PID or any child, `exit`, `exit_group`, PID and parent lookup |
+| Signals | Standard signals with `rt_sigaction`, `rt_sigprocmask`, legacy `sigreturn`, and `kill`. Supports simple handlers and SIGCHLD delivery. |
+| Memory and TLS | `brk`, `mmap2`, `munmap`, `set_thread_area`, and `set_tid_address` |
+| Files and descriptors | `open`, `openat`, `read`, `write`, `writev`, `close`, `dup`, `dup2`, `_llseek`, `stat64` family, `chdir`, `mkdir`, and `mkdirat`. Path syscalls with a directory descriptor accept `AT_FDCWD`. |
+| IPC and timing | `pipe`, `pipe2`, `poll`, `_newselect`, relative `nanosleep`, and monotonic `clock_gettime`. `fcntl` supports descriptor duplication, nonblocking I/O, append, and close-on-exec. |
 
-The current ELF loader accepts the DDOS link layout in `user/link.ld`,
-with one code page and one initial data page. Its bounded startup stack
-carries argv, environment strings, and an `AT_PAGESZ` entry. General Linux
-ELF loading, process creation and waiting, timer/event syscalls, and the
-remaining Linux ABI needed for a musl shell are pending.
+The scheduler switches among up to eight Ring 2 processes at syscalls.
+Each task has private memory, register state, and TLS. Forked descriptors
+share file offsets and status flags. Blocking pipe and console I/O and
+timer waits let other tasks run. Execution is cooperative. A program
+that never makes a syscall can hold the CPU. BIOS native tasks require
+at least 9 MiB of contiguous extended memory reported by the firmware.
 
-### System image and BusyBox
+`set_thread_area` supplies one DPL-2 data descriptor. The DDOS C library
+and the locally built musl archive load it with selector RPL 2.
 
-The upstream checkouts are in the ignored `.ref/musl` and `.ref/busybox`
-directories. `sh tools/build-musl.sh` builds a static i686 musl sysroot at
-`build/musl-sysroot`. `sh tools/build-busybox.sh` starts from
-`allnoconfig` and uses [the applet configuration](tools/busybox.config).
-It needs a POSIX build shell and host compiler, Clang/LLD on PATH, and
-Linux i386 headers and GCC runtime objects in that sysroot. BusyBox
-1.36.1 exposes Hush line editing through `FEATURE_EDITING`.
+The native loader reads static i386 ELF32 executables directly from ext2.
+It maps multiple PT_LOAD segments at their linked addresses, zeros BSS,
+leaves gaps unmapped, and passes argv, environment, and the program-header
+metadata in the auxiliary vector. Each task has a 1 MiB image window
+including stack and heap. The original DDOS link layout retains its
+compact memory layout. The bundled musl programs target i686 with SSE2.
+Dynamic linking and PIE are pending.
 
-Use `python build.py --busybox build/busybox` to install the static ELF32
-as regular files at `B:/bin/busybox` and `B:/bin/sh`. The system image
-builder supports direct and indirect ext2 blocks for large host-installed
-binaries. On startup DDOS attempts `/bin/sh` with `PATH=/bin` and `D:/`
-as its working directory. It returns to the DDOS shell if the executable
-is absent, rejected, or exits. Stock BusyBox still requires general ELF
-and Linux ABI support to run as PID 1.
+### Local pipes and Nano-X transport
+
+Musl and BusyBox use byte-stream pipes through the Linux syscall ABI.
+DDOS also accepts case-insensitive Windows-style names such as
+`\\.\pipe\desktop`. Open a name with `O_CREAT | O_EXCL | O_RDWR` to
+create a server endpoint, then open the same name with `O_RDWR` for one
+duplex client connection. Closing the peer allows pending data to drain
+before EOF. DDOS supports eight pipe pairs with 512 bytes per direction.
+
+The local `AF_UNIX` stream adapter routes `socket`, `bind`, `listen`,
+`connect`, and `accept` to the same pipe queues. Nano-X can use its
+existing local socket protocol. Named pipes and sockets expose distinct
+interfaces, similar to the split in Wine.
+[Wine named pipes](https://github.com/wine-mirror/wine/blob/master/server/named_pipe.c) and
+[Wine sockets](https://github.com/wine-mirror/wine/blob/master/server/sock.c).
+
+### BusyBox, runit, and Nano-X
+
+Place the upstream source trees in the ignored `.ref/musl`,
+`.ref/busybox`, `.ref/runit`, and `.ref/microwindows` directories. Use
+[upstream musl](https://git.musl-libc.org/git/musl/),
+[BusyBox 1.36.1](https://busybox.net/),
+[runit](https://github.com/g-pape/runit), and
+[Microwindows](https://github.com/ghaerr/microwindows). Use
+a POSIX build shell, GNU Make, a host C compiler, and LLVM on PATH. The
+i686 musl sysroot also needs Linux UAPI headers and matching GCC runtime
+objects for Clang's static links. The scripts work with native Windows
+LLVM and an MSYS shell and host tools.
+
+```sh
+sh tools/build-musl.sh
+sh tools/build-busybox.sh
+sh tools/build-runit.sh
+sh tools/build-microwindows.sh
+python build.py
+```
+
+The builder installs the available static ELF32 outputs as regular files
+in `B:/bin`. Use `--busybox FILE`, `--runit DIR`, or `--microwindows DIR`
+to use explicitly supplied binaries. BusyBox provides `busybox` and
+`sh` with the [Hush and applet configuration](tools/busybox.config).
+The runit tools are `runit`, `runit-init`, `runsvdir`, `runsv`, and `sv`.
+The graphics build provides separate `nano-X` and `nanowm` binaries.
+
+The native loader also accepts scripts whose shebang names an absolute
+ELF interpreter path. The image includes executable stages under
+`B:/etc/runit` and the login shell service in `B:/etc/service/shell/run`. The login profile attempts
+to start Nano-X and NanoWM when `/dev/fb0` is present. On boot, DDOS
+attempts `/bin/runit` with `PATH=/bin` and `D:/` as the working directory
+and falls back to the DDOS prompt when runit exits.
+
+Boot supervision is still pending. The boot attempt runs in the
+foreground runtime as PID 2, so runit exits at its PID 1 check. Writable
+service state, directory enumeration, terminal control, and `getcwd`
+are still needed for the full login flow. The Nano-X transport and GOP
+device can be tested independently of automatic NanoWM startup.
 
 ## DOS syscall interface
 
-The syscall ABI belongs to real-mode DOS COM programs on the BIOS path.
-The loader sets up a minimal PSP and DOS command tail and starts the program
-at offset `0100h`. DOS functions use `INT 21h` with the function number in
+The syscall ABI belongs to DOS programs on the BIOS path. The loader sets up
+a minimal PSP and DOS command tail. It starts COM programs at offset `0100h`
+and uses the MZ header's relocated `CS:IP` and `SS:SP` for EXE programs.
+MZ load images and their minimum allocation must fit in the existing
+64 KiB DOS program arena. This path uses the real-mode bridge. Virtual
+8086 execution is pending. DOS functions use `INT 21h` with the function number in
 `AH`. `INT 20h` is also available.
 
 | Vector and function | Input | Behavior |
@@ -175,9 +229,9 @@ at offset `0100h`. DOS functions use `INT 21h` with the function number in
 
 ### ext2 file calls
 
-On the BIOS path, a COM program can use DOS file handles to access ext2.
+On the BIOS path, a DOS program can use DOS file handles to access ext2.
 Use `D:/documents/report.txt` for an absolute path or `report.txt` for a
-path relative to the program's current ext2 directory. A COM program starts
+path relative to the program's current ext2 directory. A DOS program starts
 with the shell's ext2 directory. Its DOS change-directory calls affect the
 program only. DOS lookup folds ASCII case and prefers an exact match.
 The native ext2 shell uses case-sensitive names.
@@ -207,12 +261,15 @@ carry set and `AX=0001h`. Native protected-mode applications use the separate IN
 
 The drive table routes kernel and native paths to FAT12, ext2, and RAM-backed
 nodes. The DOS file handle table exposes the ext2 data volume to BIOS-booted
-COM programs. DOS console output is available through INT 21h.
+DOS programs. DOS console output is available through INT 21h.
 
 The BIOS console uses firmware video and keyboard interrupts through the
 real-mode bridge. The UEFI console writes pixels directly to the GOP
-framebuffer and polls a PS/2 keyboard. Neither surface is exposed through
-`/dev/fb0`, a terminal node, or a keyboard node. The graphics console uses
+framebuffer and polls a PS/2 keyboard. Native programs can use
+`/dev/console` or `/dev/tty` for console I/O. `/dev/fb0` supports Linux
+`FBIOGET_FSCREENINFO`, `FBIOGET_VSCREENINFO`, and a shared full-device
+mapping for a page-aligned GOP framebuffer of up to 3 MiB. Direct
+keyboard and mouse nodes are pending. The graphics console uses
 the public-domain [font8x8 bitmap font](https://github.com/dhepper/font8x8).
 
 ## Toolchain and source layout
@@ -223,8 +280,8 @@ NASM assembles the BIOS boot sector, x86 entry points, and UEFI payload.
 `llvm-objcopy` extracts the flat kernel images used by the bootloaders.
 The x64 UEFI loader is built separately with Clang and linked as a
 PE/COFF EFI application by `lld-link`. ELF is a build intermediate.
-The DOS loader runs 16-bit flat COM binaries from B:/bin on BIOS. Native
-applications use a limited static ELF32 loader. DOS MZ EXE loading is pending.
+The DOS loader runs 16-bit COM and small MZ EXE binaries from `B:/bin`
+on BIOS. Native applications use the static ELF32 loader.
 
 | Directory | Responsibility |
 | --- | --- |
@@ -232,7 +289,7 @@ applications use a limited static ELF32 loader. DOS MZ EXE loading is pending.
 | `src/arch/x86` | Protected-mode support and linker script |
 | `src/drivers` | ATA disk I/O and the console bitmap font |
 | `src/fs` | VFS drive routing, FAT12, and ext2 |
-| `src/kernel` | Shell, console helpers, DOS COM loader, and DOS file handles |
+| `src/kernel` | Shell, console helpers, DOS executable loader and DOS file handles |
 | `user` | Native startup code, C library, linker script, and demo |
 | `src/include`, `tools` | Shared interfaces and the host-side ext2 formatter |
 

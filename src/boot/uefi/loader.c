@@ -130,6 +130,7 @@ static int framebuffer(struct boot_services *boot, struct uefi_handoff *handoff)
     handoff->framebuffer = (uint32_t)mode->framebuffer;
     handoff->width = info->width;
     handoff->height = info->height;
+    handoff->format = info->format;
     handoff->stride = info->stride;
     return 1;
 }
@@ -146,7 +147,7 @@ status_t efi_main(handle_t image, struct system_table *system)
     size_t disk_size = (size_t)((uintptr_t)disk_end - (uintptr_t)disk_start);
     size_t kernel_size = (size_t)((uintptr_t)kernel_end - (uintptr_t)kernel_start);
     size_t disk_end_page = (DDOS_DISK_OFFSET + disk_size + PAGE_SIZE - 1) / PAGE_SIZE;
-    size_t pages = disk_end_page + DDOS_X86_DOMAIN_PAGES;
+    size_t pages = disk_end_page + DDOS_X86_DOMAIN_PAGES + DDOS_X86_NATIVE_PAGES;
     uint64_t base = 0x7fffffff;
     status_t status = boot->allocate_pages(ALLOCATE_MAX_ADDRESS, LOADER_CODE, pages, &base);
     if (status)

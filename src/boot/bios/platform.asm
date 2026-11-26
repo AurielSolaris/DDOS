@@ -2,7 +2,7 @@ bits 16
 section .entry progbits alloc exec nowrite align=1
 global _start
 extern kernel_main, __bss_start, __bss_end, load_protected_idt, restore_protected_idt
-extern dos_files_begin, dos_file_interrupt, x86_domains_configure
+extern dos_files_begin, dos_file_interrupt, x86_domains_configure, x86_native_configure
 
 KERNEL_BASE equ 0x10000
 KERNEL_SEGMENT equ KERNEL_BASE >> 4
@@ -35,6 +35,15 @@ _start:
     movzx eax, ax
     shl eax, 10
     mov [conventional_end], eax
+    mov ah, 0x88
+    push ds
+    int 0x15
+    pop ds
+    jc .no_extended
+    cmp ax, 9248
+    jb .no_extended
+    mov byte [extended_available], 1
+.no_extended:
     xor ax, ax
     mov es, ax
     mov word [es:0x20 * 4], terminate
@@ -54,7 +63,7 @@ _start:
 
 section .text progbits alloc exec nowrite align=1
 bits 32
-global platform_putc, platform_getc, platform_clear, platform_read
+global platform_putc, platform_getc, platform_try_getc, platform_clear, platform_read
 global platform_can_run, copy_to_program, copy_from_program, run_program
 
 protected_entry:
@@ -75,6 +84,12 @@ protected_entry:
     push dword KERNEL_BASE
     call x86_domains_configure
     add esp, 16
+    cmp byte [extended_available], 0
+    je .kernel
+    sub esp, 8
+    push dword 0x100000 - KERNEL_BASE
+    call x86_native_configure
+    add esp, 12
 .kernel:
     call kernel_main
 .halt:
@@ -88,6 +103,10 @@ platform_putc:
 
 platform_getc:
     mov ecx, getc
+    jmp call_bios
+
+platform_try_getc:
+    mov ecx, try_getc
     jmp call_bios
 
 platform_clear:
@@ -135,6 +154,10 @@ copy_from_program:
     ret
 
 run_program:
+    mov edx, [esp + 8]
+    mov [program_entry], edx
+    mov edx, [esp + 12]
+    mov [program_initial_stack], edx
     mov eax, [esp + 4]
     sub esp, 8
     push eax
@@ -209,6 +232,13 @@ getc:
     movzx eax, ax
     ret
 
+try_getc:
+    mov ah, 1
+    int 0x16
+    jnz getc
+    xor eax, eax
+    ret
+
 clear:
     mov ax, 0x0003
     int 0x10
@@ -240,12 +270,11 @@ enter_program:
     mov es, ax
     mov fs, ax
     mov gs, ax
-    mov ss, ax
-    mov esp, 0xfffe
+    movzx esp, word [cs:program_initial_stack]
+    mov ss, [cs:program_initial_stack + 2]
     xor ax, ax
-    push ax
     sti
-    jmp PROGRAM_SEGMENT:0x100
+    jmp far [cs:program_entry]
 
 ; INT 20h and INT 21h/4Ch abandon the child's interrupt frame.
 terminate:
@@ -390,7 +419,10 @@ real_idtr:
 
 section .bss nobits alloc noexec write align=4
 conventional_end resd 1
+extended_available resb 1
 program_stack resd 1
+program_entry resd 1
+program_initial_stack resd 1
 child_ss resw 1
 child_sp resw 1
 dos_frame resw 15

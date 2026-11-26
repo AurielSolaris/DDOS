@@ -17,7 +17,8 @@ bool ext2_mounted(void)
     return ext2_volume.mounted;
 }
 
-static uint8_t metadata[MAX_BLOCK], data[MAX_BLOCK];
+static uint8_t metadata[MAX_BLOCK] __attribute__((section(".fs_workspace")));
+static uint8_t data[MAX_BLOCK] __attribute__((section(".fs_workspace")));
 
 bool ext2_read_block(uint32_t block, void *buffer)
 {

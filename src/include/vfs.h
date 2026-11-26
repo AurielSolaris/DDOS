@@ -3,7 +3,7 @@
 
 #include <stdbool.h>
 
-enum volume { VFS_A, VFS_B, VFS_C, VFS_D, VFS_DEV, VFS_TMP, VFS_INVALID };
+enum volume { VFS_A, VFS_B, VFS_C, VFS_D, VFS_DEV, VFS_TMP, VFS_PIPE, VFS_SOCKET, VFS_INVALID };
 
 struct vfs_path {
     enum volume volume;

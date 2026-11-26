@@ -1,7 +1,7 @@
 bits 16
 org 0x7c00
 
-RESERVED_SECTORS equ 65
+RESERVED_SECTORS equ 105
 
 jmp short boot
 nop

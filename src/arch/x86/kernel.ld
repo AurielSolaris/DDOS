@@ -9,8 +9,10 @@ SECTIONS
         *(.domain_bridge)
         __domain_bridge_end = .;
     }
-    ASSERT(__domain_bridge_end - __domain_bridge_start <= 0x1000, "domain bridge exceeds one page")
-    /* Keep all other read-only data out of the domain bridge's page. */
+    .domain_state (NOLOAD) : { *(.domain_state) }
+    ASSERT(ADDR(.domain_state) + SIZEOF(.domain_state) - __domain_bridge_start <= 0x1000,
+           "domain bridge and metadata exceed one page")
+    /* Keep all other read-only data out of the domain bridge page. */
     .rodata ALIGN(0x1000) : { *(.rodata .rodata.*) }
     .data : { *(.data .data.*) }
     .bss : {
@@ -18,13 +20,11 @@ SECTIONS
         *(.bss .bss.*) *(COMMON)
         __bss_end = .;
     }
-    ASSERT(__bss_end <= 0xc000, "kernel leaves insufficient stack space")
-    .domain_state 0xc000 (NOLOAD) : {
-        __domain_state_start = .;
-        *(.domain_state)
-    }
-    ASSERT(SIZEOF(.domain_state) <= 0x1000, "domain bridge metadata exceeds one page")
+    ASSERT(__bss_end <= 0xd000, "kernel leaves insufficient stack space")
     /* One dedicated entry stack, below the ordinary kernel stack. */
     __domain_stack_top = 0xe000;
+    /* Shared firmware layout, above the BIOS DOS arena and diagnostic pages. */
+    .fs_workspace 0x2a000 (NOLOAD) : { *(.fs_workspace) }
+    ASSERT(SIZEOF(.fs_workspace) <= 0x2000, "filesystem workspace exceeds reserved memory")
     /DISCARD/ : { *(.eh_frame*) *(.comment) *(.note*) }
 }

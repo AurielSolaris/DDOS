@@ -285,7 +285,7 @@ static void help(void)
           "  RINGS              Test x86 privilege domains\r\n"
           "  HELP               Show this command list\r\n");
     if (platform_can_run())
-        print("  <name>.COM         Run a DOS program from B:/bin\r\n");
+        print("  <name>.COM/.EXE    Run a DOS program from B:/bin\r\n");
 }
 
 static void command(char *line)
@@ -340,7 +340,7 @@ void kernel_main(void)
     print("DDOS - DOS Derived OS\r\n");
     if (vfs_select(VFS_D))
         print(ext2_writable() ? "D: ext2\r\n" : "D: ext2 (read-only)\r\n");
-    native_start(EXT2_ROOT, "/bin/sh", true);
+    native_start(EXT2_ROOT, "/bin/runit", true);
     for (;;) {
         char line[128];
         unsigned length = 0;

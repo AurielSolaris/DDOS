@@ -5,8 +5,10 @@
 #include <stdint.h>
 
 enum {
-    NATIVE_PAGE = 4096, NATIVE_PAGES = 8,
-    NATIVE_FILE_LIMIT = 16 * 1024, NATIVE_TRAP = 0x40000000,
+    NATIVE_PAGE = 4096, NATIVE_PAGES = 256,
+    NATIVE_FB_OFFSET = NATIVE_PAGES * NATIVE_PAGE,
+    NATIVE_FB_MAX = 3 * 1024 * 1024,
+    NATIVE_TRAP = 0x40000000,
 };
 
 /* Matches PUSHAD followed by the inter-privilege IRET frame. */
@@ -16,15 +18,33 @@ struct native_frame {
 };
 
 struct native_space {
-    uint8_t *image, *file;
-    uint32_t *pages, directory;
+    uint8_t *image, *stage;
+    uint32_t base, size, tls_base, tls_limit, fb_access;
+    uint8_t access[NATIVE_PAGES];
+    _Alignas(16) uint8_t fpu[512];
     struct native_frame frame;
 };
 
-bool native_space_init(struct native_space *);
-void native_tls(uint32_t base, uint32_t limit);
-void native_page(struct native_space *, unsigned slot, bool present);
+struct ext2_inode;
+struct native_elf {
+    uint32_t entry, phdr, phnum, heap_start, stack_bottom;
+};
+
+struct native_fb {
+    uint32_t physical, width, height, stride, size, red, blue;
+};
+void native_fb_configure(uint32_t, uint32_t, uint32_t, uint32_t, uint32_t);
+const struct native_fb *native_framebuffer(void);
+
+void *native_init(void);
+void native_space_init(struct native_space *, unsigned slot);
+void native_reset_fpu(struct native_space *);
+void native_page(struct native_space *, unsigned slot, unsigned permissions);
+void native_commit(struct native_space *, uint32_t base, uint32_t size);
+bool native_load_elf(struct native_space *, const struct ext2_inode *, struct native_elf *);
 uint32_t native_step(struct native_space *);
+void native_clock_start(void);
+uint32_t native_millis(void);
 void native_start(uint32_t directory, const char *path, bool quiet);
 
 #endif

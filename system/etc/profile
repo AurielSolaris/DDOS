@@ -1,0 +1,10 @@
+export PATH=/bin
+export TERM=linux
+if [ -e /dev/fb0 ] && [ -x /bin/nanowm ] && [ -z "$NANOWM_STARTED" ]; then
+    export NANOWM_STARTED=1
+    if [ -x /bin/nano-X ]; then
+        /bin/nano-X &
+        sleep 1
+    fi
+    /bin/nanowm &
+fi

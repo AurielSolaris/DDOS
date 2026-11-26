@@ -57,11 +57,11 @@ class SystemImage:
                   self.time, self.time, self.time, 0, 0, links, blocks * 2)
         pack_into("<15I", self.disk, offset + 40, *pointers)
 
-    def file(self, data):
+    def file(self, data, permissions=0o755):
         number = self.reserve_inode()
         start = self.next_block
         pointers = self.content(data)
-        self.inode(number, 0o100755, len(data), 1, self.next_block - start, pointers)
+        self.inode(number, 0o100000 | permissions, len(data), 1, self.next_block - start, pointers)
         return number
 
     def directory(self, number, parent, entries):
@@ -99,32 +99,57 @@ class SystemImage:
         return self.disk
 
 
-def build_system(output, app, files, busybox):
+def static_i386(path):
+    data = path.read_bytes()
+    if len(data) < 52 or data[:7] != b"\x7fELF\x01\x01\x01":
+        raise ValueError(f"{path} must be a little-endian i386 ELF32 executable")
+    kind, machine = unpack_from("<HH", data, 16)
+    offset = unpack_from("<I", data, 28)[0]
+    width, count = unpack_from("<HH", data, 42)
+    if (kind, machine, width) != (2, 3, 32) or not count or offset + count * width > len(data):
+        raise ValueError(f"{path} needs a valid static i386 ELF executable header")
+    segments = [unpack_from("<I", data, offset + i * width)[0] for i in range(count)]
+    if 1 not in segments or 2 in segments or 3 in segments:
+        raise ValueError(f"{path} must be statically linked")
+    return data
+
+
+def install_directory(fs, number, parent, source):
+    entries = []
+    for path in sorted(source.iterdir()):
+        if path.is_dir():
+            child = fs.reserve_inode()
+            install_directory(fs, child, number, path)
+            entries.append((path.name, child, 2))
+        else:
+            mode = 0o755 if path.parent.name in ("runit", "shell") else 0o644
+            entries.append((path.name, fs.file(path.read_bytes(), mode), 1))
+    fs.directory(number, parent, entries)
+
+
+def build_system(output, app, files, busybox, runit=None, microwindows=None):
     fs = SystemImage()
     binary, configs, temporary = (fs.reserve_inode() for _ in range(3))
     programs = {"ddosapp": app.read_bytes()}
+    if busybox:
+        data = static_i386(busybox)
+        programs.update(busybox=data, sh=data)
+    for source, names in (
+        (runit, ("runit", "runit-init", "runsvdir", "runsv", "sv")),
+        (microwindows, ("nano-X", "nanowm")),
+    ):
+        if source:
+            for name in names:
+                path = source / name
+                if name != "nano-X" or path.is_file():
+                    programs[name] = static_i386(path)
     for path in files:
         name = path.name
         if not name.isascii() or len(name) > 80 or name in programs or name in (".", ".."):
             raise ValueError(f"invalid or duplicate system filename {name}")
         programs[name] = path.read_bytes()
-    if busybox:
-        image_bytes = busybox.read_bytes()
-        if len(image_bytes) < 52 or image_bytes[:6] != b"\x7fELF\x01\x01":
-            raise ValueError("BusyBox must be a little-endian i386 ELF32 executable")
-        kind, machine = unpack_from("<HH", image_bytes, 16)
-        offset = unpack_from("<I", image_bytes, 28)[0]
-        width, count = unpack_from("<HH", image_bytes, 42)
-        if (kind, machine, width) != (2, 3, 32) or not count or offset + count * width > len(image_bytes):
-            raise ValueError("BusyBox needs a valid static i386 ELF executable header")
-        if any(unpack_from("<I", image_bytes, offset + i * width)[0] in (2, 3)
-               for i in range(count)):
-            raise ValueError("BusyBox must be statically linked")
-        if programs.keys() & {"busybox", "sh"}:
-            raise ValueError("BusyBox installation conflicts with another system file")
-        programs.update(busybox=image_bytes, sh=image_bytes)
     fs.directory(binary, 2, [(name, fs.file(data), 1) for name, data in programs.items()])
-    fs.directory(configs, 2, [])
+    install_directory(fs, configs, 2, Path(__file__).resolve().parents[1] / "system" / "etc")
     fs.directory(temporary, 2, [])
     fs.directory(2, 2, [("bin", binary, 2), ("etc", configs, 2), ("tmp", temporary, 2)])
     result = fs.finish()

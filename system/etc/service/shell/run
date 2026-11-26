@@ -1,0 +1,5 @@
+#!/bin/sh
+export PATH=/bin
+export HOME=D:/
+cd D:/
+exec /bin/sh -l </dev/tty >/dev/tty 2>&1

@@ -51,6 +51,8 @@ KERNEL_COMPONENTS = {
     "domains": "src/arch/x86/domains.c",
     "dos": "src/kernel/dos.c",
     "native": "src/kernel/native.c",
+    "native-elf": "src/kernel/native_elf.c",
+    "native-clock": "src/kernel/native_clock.c",
     "shell": "src/kernel/shell.c",
 }
 
@@ -63,8 +65,7 @@ def build_kernel_components():
     objects.append(domain_entry)
     for name, source in KERNEL_COMPONENTS.items():
         target = f"build/{name}.o"
-        extra = ("-Oz",) if name == "native" else ()
-        run("clang", *KERNEL_FLAGS, *extra, "-c", source, "-o", target)
+        run("clang", *KERNEL_FLAGS, "-Oz", "-c", source, "-o", target)
         objects.append(target)
     return objects
 
@@ -105,22 +106,29 @@ def main():
                         help="build a Ring 2 C application in place of the default demo")
     parser.add_argument("--busybox", type=Path,
                         help="install an i386 static BusyBox as B:/bin/busybox and B:/bin/sh")
+    parser.add_argument("--runit", type=Path, help="directory containing static runit tools")
+    parser.add_argument("--microwindows", type=Path, help="directory containing static nano-X and nanowm")
     args = parser.parse_args()
     if args.busybox is None and (BUILD / "busybox").is_file():
         args.busybox = BUILD / "busybox"
+    if args.runit is None and all((BUILD / "runit" / name).is_file()
+                                  for name in ("runit", "runit-init", "runsvdir", "runsv", "sv")):
+        args.runit = BUILD / "runit"
+    if args.microwindows is None and (BUILD / "microwindows" / "nanowm").is_file():
+        args.microwindows = BUILD / "microwindows"
     BUILD.mkdir(exist_ok=True)
     native_app = build_native_app(args.app.resolve())
     run("nasm", "-f", "bin", "src/boot/bios/sector.asm", "-o", "build/boot.bin")
     run("nasm", "-f", "elf32", "src/boot/bios/platform.asm", "-o", "build/platform.o")
     objects = build_kernel_components()
-    run("clang", *KERNEL_FLAGS, "-c", "src/kernel/dos_files.c", "-o", "build/dos-files.o")
+    run("clang", *KERNEL_FLAGS, "-Oz", "-c", "src/kernel/dos_files.c", "-o", "build/dos-files.o")
     run("ld.lld", "-m", "elf_i386", "-T", "src/arch/x86/kernel.ld",
         "build/platform.o", "build/dos-files.o", *objects, "-o", "build/kernel.elf")
     run("llvm-objcopy", "-O", "binary", "build/kernel.elf", "build/kernel.bin")
     try:
         image = make_boot_image((BUILD / "boot.bin").read_bytes(),
                                 (BUILD / "kernel.bin").read_bytes())
-        build_system(BUILD / "system.ext2", native_app, args.file, args.busybox)
+        build_system(BUILD / "system.ext2", native_app, args.file, args.busybox, args.runit, args.microwindows)
     except (OSError, ValueError) as error:
         parser.error(str(error))
     (BUILD / "ddos.img").write_bytes(image)

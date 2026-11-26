@@ -17,6 +17,52 @@ x86_has_write_protect:
     and eax, 1 << 18
     ret
 
+global x86_enable_sse
+x86_enable_sse:
+    pushfd
+    pop ecx
+    mov eax, ecx
+    xor eax, 1 << 21     ; CPUID is optional on older 32-bit CPUs.
+    push eax
+    popfd
+    pushfd
+    pop eax
+    push ecx
+    popfd
+    xor eax, ecx
+    test eax, 1 << 21
+    jz .unsupported
+    push ebx
+    mov eax, 1
+    cpuid
+    pop ebx
+    and edx, (1 << 24) | (1 << 25)   ; FXSR and SSE
+    cmp edx, (1 << 24) | (1 << 25)
+    jne .unsupported
+    mov eax, cr0
+    and eax, ~((1 << 2) | (1 << 3))  ; EM and TS
+    or eax, 1 << 1                  ; MP
+    mov cr0, eax
+    mov eax, cr4
+    or eax, (1 << 9) | (1 << 10)     ; OSFXSR and OSXMMEXCPT
+    mov cr4, eax
+    mov eax, 1
+    ret
+.unsupported:
+    xor eax, eax
+    ret
+
+global x86_save_fpu, x86_restore_fpu
+x86_save_fpu:
+    mov eax, [esp + 4]
+    fxsave [eax]
+    ret
+
+x86_restore_fpu:
+    mov eax, [esp + 4]
+    fxrstor [eax]
+    ret
+
 section .domain_bridge progbits alloc exec nowrite align=16
 global x86_enter_domain, domain_syscall, domain_gp, domain_pf, domain_ud, domain_bad, domain_bad_error, domain_fatal
 extern x86_domain_gdtr, x86_domain_idtr, __domain_stack_top

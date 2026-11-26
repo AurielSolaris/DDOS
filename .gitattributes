@@ -1,1 +1,20 @@
-* text=auto eol=lf
+* text=auto
+.gitattributes text eol=lf
+.gitignore text eol=lf
+LICENSE text eol=lf
+*.md text eol=lf
+*.py text eol=lf
+*.c text eol=lf
+*.h text eol=lf
+*.asm text eol=lf
+*.ld text eol=lf
+*.sh text eol=lf
+*.config text eol=lf
+system/etc/** text eol=lf
+*.bin binary
+*.[Cc][Oo][Mm] binary
+*.elf binary
+*.[Ee][Xx][Ee] binary
+*.[Ee][Ff][Ii] binary
+*.img binary
+*.ext2 binary

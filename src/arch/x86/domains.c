@@ -23,12 +23,12 @@ struct domain_memory {
     uint32_t domain_tables[2][ENTRIES];
     uint8_t code[2][PAGE];
     uint8_t data[2][PAGE];
-    uint8_t app[NATIVE_PAGES * PAGE];
-    uint8_t app_file[NATIVE_FILE_LIMIT];
 };
 
 _Static_assert(sizeof(struct domain_memory) == DDOS_X86_DOMAIN_PAGES * PAGE,
                "firmware arena size must match paging layout");
+_Static_assert(DDOS_X86_NATIVE_PAGES == (DDOS_X86_NATIVE_TASKS + 1) * NATIVE_PAGES + DDOS_X86_NATIVE_METADATA_PAGES,
+               "firmware must reserve task images, staging image and metadata");
 
 struct __attribute__((packed)) gdtr {
     uint16_t limit;
@@ -37,6 +37,9 @@ struct __attribute__((packed)) gdtr {
 
 static struct domain_memory *memory;
 static uint32_t physical_base;
+static uint8_t *native_memory;
+static bool sse;
+static struct native_fb framebuffer;
 static const uint32_t kernel_read_probe = 0x3232;
 #define DOMAIN_STATE __attribute__((section(".domain_state"), aligned(8)))
 
@@ -47,6 +50,9 @@ static volatile uint32_t write_probe DOMAIN_STATE;
 struct gdtr x86_domain_gdtr DOMAIN_STATE, x86_domain_idtr DOMAIN_STATE;
 
 extern unsigned x86_has_write_protect(void);
+extern unsigned x86_enable_sse(void);
+extern void x86_save_fpu(void *);
+extern void x86_restore_fpu(const void *);
 extern uint32_t x86_enter_domain(uint32_t directory, unsigned service, struct native_frame *);
 _Static_assert(sizeof(struct native_frame) == 60, "x86 trap frame layout");
 extern uint8_t x86_payload_start[], x86_payload_end[];
@@ -55,7 +61,7 @@ extern uint8_t x86_user_kernel_segment[], x86_user_kernel_offset[], x86_driver_c
 extern uint8_t x86_user_unmapped[], x86_user_driver_segment[], x86_user_bridge_write[];
 extern uint8_t domain_fatal[], domain_ud[], domain_gp[], domain_pf[], domain_syscall[];
 extern uint8_t domain_bad[], domain_bad_error[];
-extern uint8_t __domain_bridge_start[], __domain_state_start[], __domain_stack_top[];
+extern uint8_t __domain_bridge_start[], __domain_stack_top[];
 
 void x86_domains_configure(uint32_t kernel_base, uint32_t arena_offset, uint32_t bytes)
 {
@@ -66,6 +72,11 @@ void x86_domains_configure(uint32_t kernel_base, uint32_t arena_offset, uint32_t
         return;
     physical_base = kernel_base;
     memory = (struct domain_memory *)(uintptr_t)arena_offset;
+}
+
+void x86_native_configure(uint32_t arena_offset)
+{
+    native_memory = (uint8_t *)(uintptr_t)arena_offset;
 }
 
 static uint32_t physical(const void *offset)
@@ -153,13 +164,12 @@ static bool build_address_spaces(void)
             memory->domain_tables[d][i] = 0;
         }
     }
-    uint32_t bridge[] = {physical(__domain_bridge_start), physical(__domain_state_start),
-                         physical(__domain_stack_top) - PAGE};
+    uint32_t bridge[] = {physical(__domain_bridge_start), physical(__domain_stack_top) - PAGE};
     for (unsigned i = 0; i < sizeof(bridge) / sizeof(bridge[0]); ++i) {
         uint32_t address = bridge[i];
         unsigned table = (address >> 22) - (physical_base >> 22);
         unsigned entry = (address >> 12) & (ENTRIES - 1);
-        memory->kernel_tables[table][entry] = address | PRESENT | (i == 2 ? WRITABLE : 0);
+        memory->kernel_tables[table][entry] = address | PRESENT | (i == 1 ? WRITABLE : 0);
         for (unsigned d = 0; d < 2; ++d)
             memory->directories[d][address >> 22] =
                 physical(memory->kernel_tables[table]) | PRESENT | WRITABLE;
@@ -198,40 +208,87 @@ static uint32_t run(unsigned ring, const uint8_t *entry, uint32_t argument)
     return x86_enter_domain(physical(memory->directories[ring - 1]), 0, &frame);
 }
 
-bool native_space_init(struct native_space *app)
+void native_fb_configure(uint32_t base, uint32_t width, uint32_t height,
+                         uint32_t stride, uint32_t format)
 {
-    if (!memory || !x86_has_write_protect() || !prepare_descriptors() || !build_address_spaces())
-        return false;
-    descriptor(domain_gdt + RING2_DATA, DOMAIN_CODE, NATIVE_PAGES * PAGE - 1, 0xd3, 0x40);
-    app->image = memory->app;
-    app->file = memory->app_file;
-    app->pages = memory->domain_tables[1];
-    app->directory = physical(memory->directories[1]);
-    for (unsigned i = 0; i < NATIVE_PAGES * PAGE; ++i)
-        app->image[i] = 0;
-    for (unsigned i = 0; i < NATIVE_PAGES; ++i)
-        native_page(app, i, i == 0 || i == 1 || i == NATIVE_PAGES - 1);
+    if (!base || (base & (PAGE - 1)) || !height || stride > (NATIVE_FB_MAX / 4) / height)
+        return;
+    unsigned size = stride * height * 4;
+    if (!size || (size & (PAGE - 1)) || base > UINT32_MAX - (size - 1))
+        return;
+    framebuffer = (struct native_fb){base, width, height, stride, size,
+                                     format ? 16 : 0, format ? 0 : 16};
+}
+
+const struct native_fb *native_framebuffer(void)
+{
+    return framebuffer.size ? &framebuffer : 0;
+}
+
+void *native_init(void)
+{
+    if (!memory || !native_memory || !x86_has_write_protect() ||
+        !prepare_descriptors() || !build_address_spaces())
+        return 0;
+    sse = x86_enable_sse();
+    return native_memory + (DDOS_X86_NATIVE_TASKS + 1) * NATIVE_PAGES * PAGE;
+}
+
+void native_space_init(struct native_space *app, unsigned slot)
+{
+    app->image = native_memory + slot * NATIVE_PAGES * PAGE;
+    app->stage = native_memory + DDOS_X86_NATIVE_TASKS * NATIVE_PAGES * PAGE;
     app->frame.cs = RING2_CODE | 2;
     app->frame.ss = RING2_DATA | 2;
-    app->frame.esp = NATIVE_PAGES * PAGE - 16;
-    return true;
 }
 
-void native_tls(uint32_t base, uint32_t limit)
+void native_reset_fpu(struct native_space *app)
 {
-    descriptor(domain_gdt + TLS_SELECTOR, DOMAIN_CODE + base, limit, 0xd3, 0x40);
+    for (unsigned i = 0; i < sizeof(app->fpu); ++i)
+        app->fpu[i] = 0;
+    write16(app->fpu, 0x37f);
+    write32(app->fpu + 24, 0x1f80);
 }
 
-void native_page(struct native_space *app, unsigned slot, bool present)
+void native_page(struct native_space *app, unsigned slot, unsigned permissions)
 {
-    app->pages[slot] = present ? physical(app->image + slot * PAGE) |
-                                 PRESENT | (slot ? WRITABLE : 0) : 0;
+    app->access[slot] = permissions;
+}
+
+void native_commit(struct native_space *app, uint32_t base, uint32_t size)
+{
+    for (unsigned i = 0; i < size; ++i)
+        app->image[i] = app->stage[i];
+    app->base = base;
+    app->size = size;
 }
 
 uint32_t native_step(struct native_space *app)
 {
+    uint32_t limit = (app->base + app->size - 1) >> 12;
+    descriptor(domain_gdt + RING2_CODE, DOMAIN_CODE - app->base, limit, 0xdb, 0xc0);
+    uint32_t data_limit = app->fb_access ?
+        (app->base + NATIVE_FB_OFFSET + framebuffer.size - 1) >> 12 : limit;
+    descriptor(domain_gdt + RING2_DATA, DOMAIN_CODE - app->base, data_limit, 0xd3, 0xc0);
+    unsigned tls_flags = app->tls_limit > 0xfffff ? 0xc0 : 0x40;
+    descriptor(domain_gdt + TLS_SELECTOR, DOMAIN_CODE + app->tls_base,
+               tls_flags == 0xc0 ? app->tls_limit >> 12 : app->tls_limit, 0xd3, tls_flags);
+    for (unsigned slot = 0; slot < NATIVE_PAGES; ++slot) {
+        unsigned access = app->access[slot];
+        memory->domain_tables[1][slot] = access ? physical(app->image + slot * PAGE) | access : 0;
+    }
+    for (unsigned slot = NATIVE_PAGES; slot < ENTRIES; ++slot) {
+        uint32_t offset = (slot - NATIVE_PAGES) * PAGE;
+        memory->domain_tables[1][slot] = app->fb_access && offset < framebuffer.size ?
+            (framebuffer.physical + offset) | app->fb_access | 0x18 : 0;
+    }
     prepare_entry(2);
-    return x86_enter_domain(app->directory, 1, &app->frame);
+    if (sse)
+        x86_restore_fpu(app->fpu);
+    uint32_t event = x86_enter_domain(physical(memory->directories[1]), 1, &app->frame);
+    if (sse)
+        x86_save_fpu(app->fpu);
+    return event;
 }
 
 void x86_domains_test(void)

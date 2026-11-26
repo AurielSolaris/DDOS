@@ -30,8 +30,6 @@ static uint8_t handles[HANDLE_COUNT], transfer[WRITE_BLOCK];
 static struct open_file files[HANDLE_COUNT];
 static uint32_t current_directory;
 
-extern void copy_from_program(void *target, unsigned offset, unsigned size);
-
 void dos_files_begin(uint32_t directory)
 {
     vfs_select(VFS_D);

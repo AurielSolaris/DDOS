@@ -3,6 +3,7 @@
 
 #include "uefi_handoff.h"
 #include "x86_domains.h"
+#include "native.h"
 #include "font8x8_basic.h"
 
 extern void kernel_main(void);
@@ -131,7 +132,7 @@ static void setup_keyboard(void)
         write_keyboard(KBD_DATA, 0xf4);
 }
 
-unsigned platform_getc(void)
+unsigned platform_try_getc(void)
 {
     static const char plain[] =
         "\0\0331234567890-=\b\tqwertyuiop[]\r\0asdfghjkl;'"
@@ -145,7 +146,7 @@ unsigned platform_getc(void)
     for (;;) {
         uint8_t status = inb(KBD_STATUS);
         if (!(status & 1))
-            continue;
+            return 0;
         uint8_t scan = inb(KBD_DATA);
         if (status & 0x20)
             continue;
@@ -165,6 +166,15 @@ unsigned platform_getc(void)
             return shift ? shifted[scan] : plain[scan];
         }
     }
+}
+
+unsigned platform_getc(void)
+{
+    unsigned key;
+    do {
+        key = platform_try_getc();
+    } while (!key);
+    return key;
 }
 
 bool platform_read(unsigned sector, void *buffer)
@@ -191,15 +201,28 @@ void copy_to_program(unsigned offset, const void *source, unsigned length)
     __builtin_trap();
 }
 
-unsigned run_program(uint32_t directory)
+void copy_from_program(void *target, unsigned offset, unsigned length)
+{
+    (void)target;
+    (void)offset;
+    (void)length;
+    __builtin_trap();
+}
+
+unsigned run_program(uint32_t directory, uint32_t entry, uint32_t stack)
 {
     (void)directory;
+    (void)entry;
+    (void)stack;
     __builtin_trap();
 }
 
 void uefi_kernel_main(uint32_t kernel_base)
 {
     x86_domains_configure(kernel_base, video->domain_arena, video->domain_bytes);
+    x86_native_configure(video->domain_arena + video->domain_bytes);
+    native_fb_configure(video->framebuffer, video->width, video->height,
+                        video->stride, video->format);
     setup_keyboard();
     kernel_main();
 }
