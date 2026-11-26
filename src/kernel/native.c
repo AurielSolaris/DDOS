@@ -17,7 +17,7 @@ enum {
     AT_FDCWD = -100, FD_COUNT = 16, FILE_COUNT = 64, TASKS = DDOS_X86_NATIVE_TASKS,
     O_CREAT = 0x40, O_EXCL = 0x80, O_TRUNC = 0x200, O_APPEND = 0x400,
     EAFNOSUPPORT = 97, EADDRINUSE = 98, ENOTCONN = 107, ECONNREFUSED = 111,
-    BLOCKED = -4096, RESUMED = -4097, PIPE_COUNT = 16, PIPE_BYTES = 512,
+    BLOCKED = -4096, RESUMED = -4097, PIPE_COUNT = 16, PIPE_BYTES = 4096,
     POLLIN = 1, POLLOUT = 4, POLLERR = 8, POLLHUP = 16, POLLNVAL = 32,
     SIGCHLD = 17, SIGCONT = 18, SIGKILL = 9, SIGSTOP = 19, SIGPIPE = 13,
     SA_RESTORER = 0x04000000, SA_RESTART = 0x10000000,
@@ -79,11 +79,12 @@ struct native_runtime {
     struct process tasks[TASKS];
     struct file files[FILE_COUNT];
     uint32_t next_pid, now, installed_kib;
-    uint8_t key;
+    uint8_t key, ui_scale;
     bool desktop;
     struct pipe pipes[PIPE_COUNT];
     struct local_socket sockets[PIPE_COUNT];
     char tmp_name[32];
+    char ui_font[DDOS_FONT_PATH];
     uint8_t tmp_data[256];
     unsigned tmp_size;
 };
@@ -682,13 +683,14 @@ static int mmap2(struct process *p, const struct native_frame *r)
         const struct native_fb *fb = native_framebuffer();
         if (!file || file->volume != VFS_DEV || file->inode != 4 || !fb)
             return -ENODEV;
-        if (p->space.fb_access || r->ebx || r->ecx != fb->size || r->ebp ||
+        if (p->space.fb_access || r->ebx || r->ecx != fb->size ||
+            (r->ebp && (!fb->shadow || r->ebp != fb->size / NATIVE_PAGE || !runtime->desktop || p != &runtime->tasks[0])) ||
             r->esi != 1 || (r->edx != 1 && r->edx != 3))
             return -EINVAL;
         if ((file->flags & 3) == 1 || (r->edx == 3 && (file->flags & 3) != 2))
             return -EACCES;
-        p->space.fb_access = r->edx;
-        return p->space.base + NATIVE_FB_OFFSET;
+        p->space.fb_access = r->edx | (r->ebp ? NATIVE_FB_SHADOW : 0);
+        return p->space.base + p->space.capacity;
     }
     if (r->ebx || !r->ecx || r->ecx > p->mmap_end - p->mmap_start || r->edx != 3 ||
         r->esi != 0x22 || r->edi != UINT32_MAX || r->ebp)
@@ -1115,6 +1117,8 @@ static int exec_image(struct process *p, const char *path, uint32_t argv, uint32
 
 static int fork_task(struct process *parent)
 {
+    if (parent->space.size > NATIVE_PAGES * NATIVE_PAGE)
+        return -ENOMEM;
     unsigned slot = 0;
     while (slot < TASKS && runtime->tasks[slot].state != FREE)
         ++slot;
@@ -1122,7 +1126,7 @@ static int fork_task(struct process *parent)
         return -EAGAIN;
     struct process *child = &runtime->tasks[slot];
     copy((uint8_t *)child, (const uint8_t *)parent, sizeof(*child));
-    native_space_init(&child->space, slot);
+    native_space_init(&child->space, slot, false);
     copy(child->space.image, parent->space.image, parent->space.size);
     child->space.frame.eax = 0;
     child->pid = runtime->next_pid++;
@@ -1632,6 +1636,20 @@ static int framebuffer_ioctl(struct process *p, const struct native_frame *r)
     const struct native_fb *fb = native_framebuffer();
     if (file->volume != VFS_DEV || file->inode != 4 || !fb)
         return -ENOTTY;
+    if (r->ecx == DDOS_FB_PRESENT) {
+        if (p != &runtime->tasks[0] || !(p->space.fb_access & NATIVE_FB_SHADOW))
+            return -EACCES;
+        const uint8_t *area = user(p, r->edx, 16, false);
+        if (!area)
+            return -EFAULT;
+        unsigned x = read32(area), y = read32(area + 4);
+        unsigned width = read32(area + 8), height = read32(area + 12);
+        if (x >= fb->width || y >= fb->height || !width || !height ||
+            width > fb->width - x || height > fb->height - y)
+            return -EINVAL;
+        native_fb_present(x, y, width, height);
+        return 0;
+    }
     unsigned size = r->ecx == 0x4600 ? 160 : r->ecx == 0x4602 ? 68 : 0;
     if (!size)
         return -ENOTTY;
@@ -1671,7 +1689,7 @@ static int desktop_status(struct process *caller, uint32_t address)
 
     zero(&status, sizeof(status));
     status.installed_kib = runtime->installed_kib;
-    status.task_capacity_kib = TASKS * NATIVE_PAGES * (NATIVE_PAGE / 1024);
+    status.task_capacity_kib = (runtime->desktop ? DDOS_X86_IMAGE_PAGES : TASKS * NATIVE_PAGES) * (NATIVE_PAGE / 1024);
     status.uptime_seconds = runtime->now / 1000;
     const struct native_fb *fb = native_framebuffer();
     if (fb) {
@@ -1685,7 +1703,7 @@ static int desktop_status(struct process *caller, uint32_t address)
         struct ddos_desktop_task *info = &status.tasks[status.task_count++];
         info->pid = task->pid;
         copy((uint8_t *)info->name, (const uint8_t *)task->name, sizeof(info->name));
-        for (unsigned page = 0; page < NATIVE_PAGES; ++page) {
+        for (unsigned page = 0; page < task->space.capacity / NATIVE_PAGE; ++page) {
             if (task->space.access[page] & 1)
                 info->mapped_kib += NATIVE_PAGE / 1024;
         }
@@ -1700,6 +1718,30 @@ static int syscall(struct process *p)
     struct native_frame *r = &p->space.frame;
     switch (r->eax) {
     case DDOS_GET_STATUS: return desktop_status(p, r->ebx);
+    case DDOS_UI_FONT: {
+        uint8_t *name = user(p, r->ebx, DDOS_FONT_PATH, !r->ecx);
+        if (!name)
+            return -EFAULT;
+        if (r->ecx) {
+            unsigned length = 0;
+            while (length < DDOS_FONT_PATH && name[length])
+                ++length;
+            if (!length || length == DDOS_FONT_PATH)
+                return -EINVAL;
+            zero(runtime->ui_font, DDOS_FONT_PATH);
+            copy((uint8_t *)runtime->ui_font, name, length);
+        } else {
+            copy(name, (const uint8_t *)runtime->ui_font, DDOS_FONT_PATH);
+        }
+        return 0;
+    }
+    case DDOS_UI_SCALE:
+        if (r->ebx) {
+            if (r->ebx < DDOS_SCALE_MIN || r->ebx > DDOS_SCALE_MAX)
+                return -EINVAL;
+            runtime->ui_scale = r->ebx;
+        }
+        return runtime->ui_scale;
     case DDOS_DESKTOP_POWER:
         if (!p->can_power)
             return -EACCES;
@@ -1763,7 +1805,7 @@ static int syscall(struct process *p)
     case 55: case 221: return file_control(p, r);
     case 91: {
         uint32_t address = r->ebx, length = r->ecx;
-        if (p->space.fb_access && address == p->space.base + NATIVE_FB_OFFSET) {
+        if (p->space.fb_access && address == p->space.base + p->space.capacity) {
             if (length != native_framebuffer()->size)
                 return -EINVAL;
             p->space.fb_access = 0;
@@ -1787,7 +1829,7 @@ static int syscall(struct process *p)
     case 168: return poll_files(p, r);
     case 162: case 267: case 407: return sleep_task(p, r);
     case 78: case 265: case 403: return clock_time(p, r);
-    case 146: {
+    case 145: case 146: {
         if (r->edx > 16)
             return -EINVAL;
         const uint8_t *iov = user(p, r->ecx, r->edx * 8, false);
@@ -1796,7 +1838,8 @@ static int syscall(struct process *p)
         int total = 0;
         for (unsigned i = 0; i < r->edx; ++i) {
             uint32_t size = read32(iov + 4);
-            int count = io_write(p, r->ebx, read32(iov), size);
+            int count = r->eax == 145 ? io_read(p, r->ebx, read32(iov), size)
+                                       : io_write(p, r->ebx, read32(iov), size);
             if (count < 0)
                 return total ? total : count;
             total += count;
@@ -1887,7 +1930,7 @@ static int desktop_task(struct process *server, unsigned slot, const char *path)
             child->files[i] = server->files[i];
         }
     }
-    native_space_init(&child->space, slot);
+    native_space_init(&child->space, slot, false);
     int error = exec_image(child, path, 0, 0);
     if (!error) {
         child->can_power = slot == 2 && same(path, "/bin/taskbar");
@@ -1910,6 +1953,8 @@ static void native_session(uint32_t directory, const char *path, bool quiet, boo
     }
     zero(runtime, sizeof(*runtime));
     runtime->desktop = desktop;
+    runtime->ui_scale = DDOS_SCALE_DEFAULT;
+    copy((uint8_t *)runtime->ui_font, (const uint8_t *)DDOS_DEFAULT_FONT, sizeof(DDOS_DEFAULT_FONT));
     runtime->installed_kib = platform_ram_kib();
     struct process *initial = &runtime->tasks[0];
     initial->cwd = directory;
@@ -1921,7 +1966,7 @@ static void native_session(uint32_t directory, const char *path, bool quiet, boo
         runtime->files[i] = (struct file){3, 0, i != 0, VFS_DEV, 1};
         initial->files[i] = i + 1;
     }
-    native_space_init(&initial->space, 0);
+    native_space_init(&initial->space, 0, desktop);
     int status = exec_image(initial, path, 0, 0);
     bool launch_manager = desktop && !status;
     if (desktop && !desktop_app && status == -ENOENT) {

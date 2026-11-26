@@ -8,7 +8,7 @@
 #define DDOS_DISK_OFFSET    0x41000u
 
 struct uefi_handoff {
-    uint32_t framebuffer;
+    uint32_t framebuffer, shadow;
     uint32_t width;
     uint32_t height;
     uint32_t format;

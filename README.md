@@ -16,7 +16,8 @@ python boot.py          # BIOS with DOS COM and MZ EXE execution
 python boot.py --uefi   # x64 UEFI with GOP graphics
 ```
 
-Build and boot the UEFI desktop with these commands.
+On a fresh checkout, set up the [desktop build dependencies](#busybox-runit-and-nano-x)
+before building the UEFI desktop.
 ```text
 sh tools/build-microwindows.sh
 python build.py --desktop
@@ -26,15 +27,30 @@ python boot.py --uefi
 At the DDOS prompt, enter `NANOWM`. Click the **DDOS** button at the left
 of the taskbar to open the app menu. Type a search and press Enter to open
 the selected result, or click any visible result. Tab cycles through
-matches. Calculator, Settings, Task Manager, and File Manager also have desktop icons.
-**Restart** and **Shutdown** are available at the bottom of the popup on
-the default QEMU PC. Esc returns to the DDOS prompt.
+matches. Calculator, Settings, Task Manager, File Manager, Notepad, and
+Snake also have desktop icons. **Restart** and **Shutdown** are available
+at the bottom of the popup on the default QEMU PC. Esc returns to the DDOS
+prompt. Win/Cmd+R opens the centered, keyboard-first launcher. Type a
+name or part of one, use the arrow keys or Tab to select, and press Enter.
+The ranking prefers whole and prefix matches, then matches typed letters
+in order. F3 also opens the launcher if the host intercepts Win/Cmd+R.
 
 Settings shows firmware, display, and installed guest RAM information.
-Task Manager refreshes every second and reports mapped RAM per native
-process and for the 24 MiB task arena, alongside QEMU's installed RAM.
-Use Page Up and Page Down when the task list spans multiple pages.
-Both apps have NanoWM title bars so they can be moved or closed.
+Use **Window scale** to shrink or enlarge open DDOS desktop apps, the
+taskbar, and desktop shortcuts. The range is 75% through 125% in 5%
+steps. Use Left and Right to step through sizes, or press 0 or choose
+**Reset 100%** to restore the default. The scale lasts for the
+current desktop session. NanoWM title bars keep their fixed height and
+the GOP resolution stays the same.
+**Load font** accepts a guest path such as `D:/fonts/my-font.otf` or
+`D:/fonts/my-font.woff`. Press Enter to apply, or F4 to cancel.
+**Restore Inter** switches back to the bundled UI font. The loader
+supports OpenType and WOFF 1.0 with guest paths up to 63 characters.
+The choice lasts for the desktop session.
+
+Task Manager refreshes its memory view automatically and reports mapped
+RAM per native process and for the 25 MiB desktop task arena, alongside QEMU's
+installed RAM. Use Page Up and Page Down when the list spans pages.
 
 Press F2 to open Calculator or bring its window forward. Type `CALC`
 from the DDOS prompt, or use `python boot.py --calculator` to open it
@@ -43,11 +59,23 @@ keys. Enter evaluates, Backspace deletes, N changes the sign, C clears,
 and Q closes Calculator.
 
 File Manager opens on `D:/`. Use the drive buttons to browse `B:/`,
-`D:/`, or a mounted USB disk on `E:/`. Select a folder and choose Open
-or press Enter. Copy and Paste transfer regular files between folders
-or drives without overwriting an existing file. Rename and New folder
-accept names in the footer. Confirm edits or deletion with Enter and
-cancel with F4. Delete removes files and empty folders.
+`D:/`, or a mounted USB disk on `E:/`. Double-click a folder to open
+it or a file to open it in Notepad. Enter opens the selected entry.
+Right-click an entry for Open, Copy, Rename, Delete, and Paste, or
+right-click empty space for New file, New folder, Refresh, and Paste.
+New file creates an empty file. Rename and file or folder creation
+accept names in the footer. Enter confirms and F4 cancels. Delete
+removes files and empty folders. Copy and Paste transfer regular files
+between writable destinations without overwriting existing files.
+
+Notepad edits plain ASCII text files up to 32 KiB. Use Ctrl+N, Ctrl+O, and
+Ctrl+S for New, Open, and Save, or use the toolbar to save under a new
+name. It accepts LF and CRLF on input and saves with LF line endings.
+Closing or replacing a document with unsaved edits prompts for a decision.
+
+Snake uses the arrow keys or WASD to steer and Space to pause or resume.
+Use Start or Enter to begin. The game tracks your best score while its
+window is open.
 
 The taskbar displays date and time in UTC from the PC clock. Add
 `--debug-log build/qemu.log` to the boot command to capture guest
@@ -186,7 +214,7 @@ minimal C library in `user/` and installs it at `B:/bin/ddosapp`.
 Native `INT 80h` uses the Linux i386 syscall numbers and register order.
 `EAX` carries the number or result. Arguments are in `EBX`, `ECX`,
 `EDX`, `ESI`, `EDI`, and `EBP`. Errors are negative errno values.
-The C library covers file I/O, vector writes, seek, heap and anonymous
+The C library covers file I/O, vector reads and writes, seek, heap and anonymous
 memory mapping, TLS setup, and basic memory and string routines.
 
 | Interface | Implemented behavior |
@@ -194,7 +222,7 @@ memory mapping, TLS setup, and basic memory and string routines.
 | Processes | `fork`, `execve`, `wait4` for a child PID or any child, `exit`, `exit_group`, PID and parent lookup |
 | Signals | Standard signals with `rt_sigaction`, `rt_sigprocmask`, legacy `sigreturn`, and `kill`. Supports simple handlers and SIGCHLD delivery. |
 | Memory and TLS | `brk`, `mmap2`, `munmap`, `set_thread_area`, and `set_tid_address` |
-| Files and descriptors | `open`, `openat`, `read`, `write`, `writev`, `close`, `dup`, `dup2`, `_llseek`, `stat64` family, `chdir`, `mkdir(at)`, `getdents64`, `unlink(at)`, `rmdir`, and `rename(at/at2)`. Path syscalls with a directory descriptor accept `AT_FDCWD`. Open entries and active working directories return `EBUSY` on deletion. Renames preserve existing destination files and return `EXDEV` across volumes. |
+| Files and descriptors | `open`, `openat`, `read`, `readv`, `write`, `writev`, `close`, `dup`, `dup2`, `_llseek`, `stat64` family, `chdir`, `mkdir(at)`, `getdents64`, `unlink(at)`, `rmdir`, and `rename(at/at2)`. Path syscalls with a directory descriptor accept `AT_FDCWD`. Open entries and active working directories return `EBUSY` on deletion. Renames preserve existing destination files and return `EXDEV` across volumes. |
 | IPC and timing | `pipe`, `pipe2`, `poll`, `_newselect`, relative `nanosleep`, and monotonic or RTC-backed `clock_gettime`. `fcntl` supports descriptor duplication, nonblocking I/O, append, and close-on-exec. |
 
 The scheduler runs up to 24 Ring 2 processes. A PIT interrupt preempts
@@ -203,7 +231,7 @@ FPU state, and TLS. Forked descriptors share offsets and status flags.
 System calls remain non-preemptible in Ring 0. Blocking pipe and console
 I/O and timer waits yield to other tasks. File writes may return a
 partial count so the kernel can schedule other tasks between chunks.
-BIOS requires about 25 MiB of contiguous extended memory for the native
+BIOS requires about 27 MiB of contiguous extended memory for the native
 task images, executable staging, and runtime metadata.
 
 `set_thread_area` supplies one DPL-2 data descriptor. The DDOS C library
@@ -212,8 +240,9 @@ and the locally built musl archive load it with selector RPL 2.
 The native loader reads static i386 ELF32 executables directly from ext2.
 It maps multiple PT_LOAD segments at their linked addresses, zeros BSS,
 leaves gaps unmapped, and passes argv, environment, and the program-header
-metadata in the auxiliary vector. Each task has a 1 MiB image window
-including stack and heap. The original DDOS link layout retains its
+metadata in the auxiliary vector. Apps have 1 MiB image windows
+including stack and heap. The desktop server has a 2 MiB image window
+for its rendering and font engine. The original DDOS link layout retains its
 compact memory layout. The bundled musl programs target i686 with SSE2.
 Dynamic linking and PIE are pending.
 
@@ -224,7 +253,7 @@ DDOS also accepts case-insensitive Windows-style names such as
 `\\.\pipe\desktop`. Open a name with `O_CREAT | O_EXCL | O_RDWR` to
 create a server endpoint, then open the same name with `O_RDWR` for one
 duplex client connection. Closing the peer allows pending data to drain
-before EOF. DDOS supports 16 pipe pairs with 512 bytes per direction.
+before EOF. DDOS supports 16 pipe pairs with 4 KiB per direction.
 
 The local `AF_UNIX` stream adapter routes `socket`, `bind`, `listen`,
 `connect`, and `accept` to the same pipe queues. Nano-X can use its
@@ -236,11 +265,13 @@ interfaces, similar to the split in Wine.
 ### BusyBox, runit, and Nano-X
 
 Place the upstream source trees in the ignored `.ref/musl`,
-`.ref/busybox`, `.ref/runit`, and `.ref/microwindows` directories. Use
+`.ref/busybox`, `.ref/runit`, `.ref/microwindows`, and
+`.ref/freetype` directories. Use
 [upstream musl](https://git.musl-libc.org/git/musl/),
 [BusyBox 1.36.1](https://busybox.net/),
 [runit](https://github.com/g-pape/runit), and
-[Microwindows](https://github.com/ghaerr/microwindows). Use
+[Microwindows](https://github.com/ghaerr/microwindows), and
+[FreeType](https://github.com/freetype/freetype). Use
 a POSIX build shell, GNU Make, a host C compiler, and LLVM on PATH. The
 i686 musl sysroot also needs Linux UAPI headers and matching GCC runtime
 objects for Clang's static links. The scripts work with native Windows
@@ -250,6 +281,7 @@ LLVM and an MSYS shell and host tools.
 sh tools/build-musl.sh
 sh tools/build-busybox.sh
 sh tools/build-runit.sh
+git clone --depth 1 --branch VER-2-14-3 https://github.com/freetype/freetype.git .ref/freetype
 sh tools/build-microwindows.sh
 python build.py
 ```
@@ -260,7 +292,7 @@ to use explicitly supplied binaries. BusyBox provides `busybox` and
 `sh` with the [Hush and applet configuration](tools/busybox.config).
 The runit tools are `runit`, `runit-init`, `runsvdir`, `runsv`, and `sv`.
 The graphics build installs `nano-X`, `nanowm`, `taskbar`, `calculator`,
-`settings`, `task_mgr`, and `file_manager`.
+`settings`, `task_mgr`, `file_manager`, `notepad`, and `snake`.
 
 The native loader also accepts scripts whose shebang names an absolute
 ELF interpreter path. The image includes executable runit stages in
@@ -331,7 +363,11 @@ real-mode bridge. The UEFI console writes pixels directly to the GOP
 framebuffer and polls a PS/2 keyboard. Native programs can use
 `/dev/console` or `/dev/tty` for console I/O. `/dev/fb0` supports Linux
 `FBIOGET_FSCREENINFO`, `FBIOGET_VSCREENINFO`, and a shared full-device
-mapping for a page-aligned GOP framebuffer of up to 8 MiB. The UEFI
+mapping for a page-aligned GOP framebuffer of up to 8 MiB. Nano-X draws
+into a RAM shadow and asks the kernel to present the changed rectangle
+after app paint transactions complete. The taskbar repaints the clock when the minute
+changes. GOP presentation uses a software copy and has no hardware
+page flip or vertical synchronization. The UEFI
 PS/2 driver separates keyboard and mouse traffic and presents the
 mouse as `/dev/mouse0` when the auxiliary device responds. Reads return
 one three-byte PS/2 report with relative movement and button state.
@@ -401,8 +437,11 @@ filename so the destination is available.
 | Native ABI, pipes, and local sockets | DDOS runtime with a subset of the Linux i386 syscall ABI for musl. The named-pipe namespace follows Windows naming and the interface split was informed by [Wine](https://github.com/wine-mirror/wine/blob/master/server/named_pipe.c). DDOS implements its own queues and local socket adapter. |
 | C libraries | The small freestanding library in `user/` is DDOS code. The optional static libc is [upstream musl](https://git.musl-libc.org/git/musl/) with a local i386 TLS selector adjustment for Ring 2. |
 | BusyBox and runit | Upstream [BusyBox](https://busybox.net/) supplies Hush and its configured applets. Upstream [runit](https://github.com/g-pape/runit) is cross-built by DDOS. The applet configuration, stage scripts, shell service, and image integration are local. |
+| Frame presentation | DDOS shadow-buffer and changed-rectangle copy for GOP, guided by [Linux DRM damage handling](https://github.com/torvalds/linux/blob/master/drivers/gpu/drm/drm_plane.c) and [FreeBSD's EFI framebuffer console](https://github.com/freebsd/freebsd-src/blob/main/sys/dev/vt/hw/efifb/efifb.c). |
 | Graphics server and window manager | [Microwindows](https://github.com/ghaerr/microwindows) supplies Nano-X and the floating NanoWM. DDOS provides its input adapters, build configuration, desktop startup, and blue window colors. |
-| App menu, taskbar, Calculator, Settings, Task Manager, File Manager, and icons | Original DDOS desktop components. Their blue tonal palette uses [Material 3 color roles](https://m3.material.io/styles/color/the-color-system). The layered tint and highlights adapt [Apple HIG materials guidance](https://developer.apple.com/design/human-interface-guidelines/materials) to Nano-X drawing. |
+| App menu, taskbar, Calculator, Settings, Task Manager, File Manager, Notepad, Snake, and icons | Original DDOS desktop components. File Manager uses familiar Explorer-style interactions, Notepad follows plain-text editor conventions, and Snake uses the classic grid-based game rules. Their blue tonal palette uses [Material 3 color roles](https://m3.material.io/styles/color/the-color-system). The layered tint and highlights adapt [Apple HIG materials guidance](https://developer.apple.com/design/human-interface-guidelines/materials) to Nano-X drawing. |
+| Desktop typeface and font loading | The bundled [Inter](https://github.com/rsms/inter) Regular is an ASCII subset installed as `B:/fonts/Inter.woff` under the [SIL Open Font License](system/fonts/Inter-OFL.txt). [FreeType](https://freetype.org/) provides OpenType and WOFF decoding through Nano-X under the [FreeType License](system/fonts/FreeType-FTL.txt). |
+| Quick launcher | Original DDOS taskbar launcher inspired by [Rofi](https://github.com/davatorium/rofi), using Nano-X and native app launching. |
 | Console typeface | Public-domain [font8x8](https://github.com/dhepper/font8x8), included in the graphics console. |
 | Toolchain and emulation | Python build and boot wrappers are DDOS code. Clang, LLD, NASM, QEMU, and EDK II/OVMF are external tools or firmware. |
 

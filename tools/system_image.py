@@ -129,19 +129,19 @@ def install_directory(fs, number, parent, source):
 
 def build_system(output, app, files, busybox, runit=None, microwindows=None):
     fs = SystemImage()
-    binary, configs, temporary = (fs.reserve_inode() for _ in range(3))
+    binary, configs, temporary, fonts = (fs.reserve_inode() for _ in range(4))
     programs = {"ddosapp": app.read_bytes()}
     if busybox:
         data = static_i386(busybox)
         programs.update(busybox=data, sh=data)
     for source, names in (
         (runit, ("runit", "runit-init", "runsvdir", "runsv", "sv")),
-        (microwindows, ("nano-X", "nanowm", "taskbar", "calculator", "settings", "task_mgr", "file_manager")),
+        (microwindows, ("nano-X", "nanowm", "taskbar", "calculator", "settings", "task_mgr", "file_manager", "notepad", "snake")),
     ):
         if source:
             for name in names:
                 path = source / name
-                if name not in ("nano-X", "taskbar", "calculator", "settings", "task_mgr", "file_manager") or path.is_file():
+                if name not in ("nano-X", "taskbar", "calculator", "settings", "task_mgr", "file_manager", "notepad", "snake") or path.is_file():
                     programs[name] = static_i386(path)
     for path in files:
         name = path.name
@@ -149,9 +149,12 @@ def build_system(output, app, files, busybox, runit=None, microwindows=None):
             raise ValueError(f"invalid or duplicate system filename {name}")
         programs[name] = path.read_bytes()
     fs.directory(binary, 2, [(name, fs.file(data), 1) for name, data in programs.items()])
-    install_directory(fs, configs, 2, Path(__file__).resolve().parents[1] / "system" / "etc")
+    system = Path(__file__).resolve().parents[1] / "system"
+    install_directory(fs, configs, 2, system / "etc")
+    install_directory(fs, fonts, 2, system / "fonts")
     fs.directory(temporary, 2, [])
-    fs.directory(2, 2, [("bin", binary, 2), ("etc", configs, 2), ("tmp", temporary, 2)])
+    fs.directory(2, 2, [("bin", binary, 2), ("etc", configs, 2), ("tmp", temporary, 2),
+                        ("fonts", fonts, 2)])
     result = fs.finish()
     with NamedTemporaryFile(dir=output.parent, prefix="system-", delete=False) as temporary:
         path = Path(temporary.name)

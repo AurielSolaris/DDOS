@@ -198,7 +198,7 @@ void uefi_kernel_main(uint32_t kernel_base)
 {
     x86_domains_configure(kernel_base, video->domain_arena, video->domain_bytes);
     x86_native_configure(video->domain_arena + video->domain_bytes);
-    native_fb_configure(video->framebuffer, video->width, video->height,
+    native_fb_configure(video->framebuffer, video->shadow, video->width, video->height,
                         video->stride, video->format);
     ps2_init();
     kernel_main();

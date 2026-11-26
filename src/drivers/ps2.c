@@ -83,7 +83,7 @@ static unsigned keyboard_byte(unsigned scan)
     static const char shifted[] =
         "\0\033!@#$%^&*()_+\b\tQWERTYUIOP{}\r\0ASDFGHJKL:\""
         "~\0|ZXCVBNM<>?\0*\0 ";
-    static unsigned shift;
+    static unsigned shift, control, meta;
     static bool extended;
     if (scan == 0xe0) {
         extended = true;
@@ -95,6 +95,17 @@ static unsigned keyboard_byte(unsigned scan)
         case 0x50: return DDOS_KEY_DOWN;
         case 0x49: return DDOS_KEY_PAGE_UP;
         case 0x51: return DDOS_KEY_PAGE_DOWN;
+        case 0x4b: return DDOS_KEY_LEFT;
+        case 0x4d: return DDOS_KEY_RIGHT;
+        case 0x47: return DDOS_KEY_HOME;
+        case 0x4f: return DDOS_KEY_END;
+        case 0x53: return DDOS_KEY_DELETE;
+        case 0x1d: control |= 2; break;
+        case 0x9d: control &= ~2u; break;
+        case 0x5b: meta |= 1; break;
+        case 0xdb: meta &= ~1u; break;
+        case 0x5c: meta |= 2; break;
+        case 0xdc: meta &= ~2u; break;
         }
     } else if ((scan & 0x7f) == 0x2a || (scan & 0x7f) == 0x36) {
         unsigned bit = (scan & 0x7f) == 0x2a ? 1 : 2;
@@ -102,11 +113,28 @@ static unsigned keyboard_byte(unsigned scan)
             shift &= ~bit;
         else
             shift |= bit;
+    } else if ((scan & 0x7f) == 0x1d) {
+        if (scan & 0x80)
+            control &= ~1u;
+        else
+            control |= 1;
     } else if (scan == 0x3c) {
         return DDOS_KEY_F2;
+    } else if (scan == 0x3d) {
+        return DDOS_KEY_F3;
     } else if (scan == 0x3e) {
         return DDOS_KEY_F4;
     } else if (scan < sizeof(normal)) {
+        if (meta)
+            return normal[scan] == 'r' ? DDOS_KEY_F3 : 0;
+        if (control) {
+            switch (normal[scan]) {
+            case 'n': return DDOS_KEY_CTRL_N;
+            case 'o': return DDOS_KEY_CTRL_O;
+            case 's': return DDOS_KEY_CTRL_S;
+            default: return 0;
+            }
+        }
         return shift ? shifted[scan] : normal[scan];
     }
     return 0;

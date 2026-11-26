@@ -6,11 +6,12 @@
 #include <stdbool.h>
 #include <stdio.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 enum { W = 640, H = 478, PATH = 256, ROWS = 12, TOP = 111, ROW_H = 23 };
-enum action { OPEN, COPY, PASTE, RENAME, DELETE, FOLDER, PREV, NEXT };
-enum editor { BROWSING, RENAMING, CREATING, CONFIRMING };
+enum action { OPEN, COPY, PASTE, RENAME, DELETE, FOLDER, PREV, NEXT, NEW_FILE, REFRESH };
+enum editor { BROWSING, RENAMING, CREATING, CONFIRMING, CREATING_FILE };
 
 struct item {
     char name[PATH];
@@ -18,7 +19,8 @@ struct item {
 };
 
 static const char *const actions[] = {
-    "Open", "Copy", "Paste", "Rename", "Delete", "New folder", "Previous", "Next"
+    "Open", "Copy", "Paste", "Rename", "Delete", "New folder", "Previous", "Next",
+    "New file", "Refresh"
 };
 static GR_WINDOW_ID window;
 static GR_GC_ID gc;
@@ -28,6 +30,25 @@ static int selected = -1;
 static unsigned page, entries;
 static bool more;
 static enum editor editing;
+static uint32_t last_click;
+static int last_row = -1, last_x, last_y;
+enum { CONTEXT_W = 146, CONTEXT_ROW = 25 };
+static int context_x, context_y;
+static enum action context[7];
+static unsigned context_count;
+
+static bool enabled(enum action action)
+{
+    if (action == PASTE)
+        return *clipboard && folder[0] != 'B';
+    if (action == NEW_FILE || action == FOLDER)
+        return folder[0] != 'B';
+    if (action == RENAME || action == DELETE)
+        return selected >= 0 && folder[0] != 'B';
+    if (action == OPEN || action == COPY)
+        return selected >= 0 && (action != COPY || !items[selected].directory);
+    return true;
+}
 
 static unsigned action_x(unsigned index)
 {
@@ -53,6 +74,7 @@ static bool path_for(const char *name, char dest[PATH])
 static void load_folder(void)
 {
     for (;;) {
+        last_row = -1;
         entries = 0;
         more = false;
         selected = -1;
@@ -114,6 +136,7 @@ static void go_up(void)
 
 static void paint(void)
 {
+    GrDdosFrame(GR_TRUE);
     desk_panel(window, gc, W, H);
     for (unsigned i = 0; i < 3; ++i) {
         char drive[3] = {"BDE"[i], ':', 0};
@@ -136,6 +159,9 @@ static void paint(void)
                   ((i == PASTE && !*clipboard) || (i == PREV && !page) || (i == NEXT && !more))
                       ? DESK_MUTED : DESK_PRIMARY);
     }
+    desk_round(window, gc, W - 260, 86, 120, 20, 6, DESK_CONTAINER);
+    desk_text(window, gc, W - 239, 91, "New file",
+              enabled(NEW_FILE) ? DESK_PRIMARY : DESK_MUTED);
     desk_text(window, gc, 21, 94, "Name", DESK_MUTED);
     desk_text(window, gc, 540, 94, "Type", DESK_MUTED);
     desk_fill(window, gc, 16, TOP - 2, W - 32, 1, DESK_OUTLINE);
@@ -156,12 +182,13 @@ static void paint(void)
         desk_text(window, gc, 44, TOP + 10, "No entries", DESK_MUTED);
     desk_fill(window, gc, 16, 403, W - 32, 1, DESK_OUTLINE);
     char hint[PATH];
-    if (editing == RENAMING || editing == CREATING)
-        snprintf(hint, sizeof(hint), "%s: %.67s_", editing == RENAMING ? "Rename" : "New folder", input);
+    if (editing == RENAMING || editing == CREATING || editing == CREATING_FILE)
+        snprintf(hint, sizeof(hint), "%s: %.67s_", editing == RENAMING ? "Rename" :
+                 editing == CREATING ? "New folder" : "New file", input);
     else if (editing == CONFIRMING)
         snprintf(hint, sizeof(hint), "Delete %.58s? Enter to confirm, F4 to cancel.", items[selected].name);
     else
-        snprintf(hint, sizeof(hint), "%.76s", *message ? message : "Select a folder, then choose Open.");
+        snprintf(hint, sizeof(hint), "%.76s", *message ? message : "Double-click to open. Right-click for more actions.");
     desk_text(window, gc, 20, 416, hint, DESK_ON_SURFACE);
     snprintf(hint, sizeof(hint), "Page %u", page + 1);
     desk_text(window, gc, 20, 449, hint, DESK_MUTED);
@@ -169,7 +196,20 @@ static void paint(void)
         snprintf(hint, sizeof(hint), "Copy: %.68s", clipboard);
         desk_text(window, gc, 103, 449, hint, DESK_MUTED);
     }
-    GrFlush();
+    if (context_count) {
+        desk_round(window, gc, context_x, context_y, CONTEXT_W, context_count * CONTEXT_ROW + 8,
+                   8, DESK_OUTLINE);
+        desk_round(window, gc, context_x + 1, context_y + 1, CONTEXT_W - 2,
+                   context_count * CONTEXT_ROW + 6, 7, DESK_SURFACE);
+        for (unsigned i = 0; i < context_count; ++i) {
+            enum action action = context[i];
+            desk_text(window, gc, context_x + 12, context_y + 10 + i * CONTEXT_ROW,
+                      action == OPEN && selected >= 0 && !items[selected].directory
+                          ? "Open in Notepad" : actions[action],
+                      enabled(action) ? (action == DELETE ? DESK_ERROR : DESK_ON_SURFACE) : DESK_MUTED);
+        }
+    }
+    GrDdosFrame(GR_FALSE);
 }
 
 static void paste(void)
@@ -226,6 +266,12 @@ static void paste(void)
 static void perform(enum action action)
 {
     message[0] = 0;
+    if (!enabled(action))
+        return;
+    if (action == REFRESH) {
+        load_folder();
+        return;
+    }
     if (action == PREV || action == NEXT) {
         if (action == PREV && page)
             --page;
@@ -239,8 +285,8 @@ static void perform(enum action action)
             paste();
         return;
     }
-    if (action == FOLDER) {
-        editing = CREATING;
+    if (action == FOLDER || action == NEW_FILE) {
+        editing = action == FOLDER ? CREATING : CREATING_FILE;
         input[0] = 0;
         return;
     }
@@ -255,8 +301,15 @@ static void perform(enum action action)
     if (action == OPEN) {
         if (item->directory)
             navigate(path);
-        else
-            strcpy(message, "Select Copy to copy this file to another folder.");
+        else {
+            pid_t child = fork();
+            if (!child) {
+                execl("/bin/notepad", "/bin/notepad", path, (char *)0);
+                _exit(127);
+            }
+            if (child < 0)
+                error_text("Open Notepad", errno);
+        }
     } else if (action == COPY) {
         if (item->directory)
             strcpy(message, "Choose a regular file to copy.");
@@ -298,6 +351,14 @@ static void accept(void)
             error_text("New folder", errno);
         else
             load_folder();
+    } else if (mode == CREATING_FILE) {
+        int fd = open(dest, O_WRONLY | O_CREAT | O_EXCL, 0644);
+        if (fd < 0)
+            error_text("New file", errno);
+        else {
+            close(fd);
+            load_folder();
+        }
     } else if (path_for(items[selected].name, old)) {
         if (rename(old, dest) < 0)
             error_text("Rename", errno);
@@ -308,6 +369,12 @@ static void accept(void)
 
 static void key(unsigned value)
 {
+    last_row = -1;
+    if (context_count) {
+        context_count = 0;
+        if (value == MWKEY_F4)
+            return;
+    }
     if (editing != BROWSING) {
         size_t length = strlen(input);
         if (value == MWKEY_ENTER)
@@ -337,10 +404,49 @@ static void key(unsigned value)
     }
 }
 
-static void click(int x, int y)
+static int row_at(int x, int y)
+{
+    return x >= 16 && x < W - 16 && y >= TOP && y < TOP + (int)entries * ROW_H
+        ? (y - TOP) / ROW_H : -1;
+}
+
+static void right_click(int x, int y)
+{
+    if (editing != BROWSING || y < TOP || y >= 403)
+        return;
+    last_row = -1;
+    selected = row_at(x, y);
+    context_count = 0;
+    if (selected >= 0) {
+        context[context_count++] = OPEN;
+        context[context_count++] = COPY;
+        context[context_count++] = RENAME;
+        context[context_count++] = DELETE;
+    } else {
+        context[context_count++] = NEW_FILE;
+        context[context_count++] = FOLDER;
+        context[context_count++] = REFRESH;
+    }
+    context[context_count++] = PASTE;
+    int height = context_count * CONTEXT_ROW + 8;
+    context_x = x + CONTEXT_W > W - 6 ? W - CONTEXT_W - 6 : x;
+    context_y = y + height > H - 6 ? H - height - 6 : y;
+}
+
+static void click(int x, int y, uint32_t millis)
 {
     if (editing != BROWSING)
         return;
+    if (context_count) {
+        int row = y - context_y - 4;
+        int count = context_count;
+        context_count = 0;
+        if (x >= context_x && x < context_x + CONTEXT_W && row >= 0 && row / CONTEXT_ROW < count)
+            perform(context[row / CONTEXT_ROW]);
+        return;
+    }
+    int previous = last_row;
+    last_row = -1;
     message[0] = 0;
     if (y >= 13 && y < 40 && x >= 16 && x < 178) {
         char root[] = {"BDE"[(x - 16) / 54], ':', '/', 0};
@@ -349,35 +455,64 @@ static void click(int x, int y)
         go_up();
     } else if (y >= 53 && y < 81 && x >= 16 && x < (int)action_x(NEXT + 1)) {
         perform((x - 16) / 76);
-    } else if (y >= TOP && y < TOP + (int)entries * ROW_H) {
-        selected = (y - TOP) / ROW_H;
+    } else if (y >= 86 && y < 106 && x >= W - 260 && x < W - 140) {
+        perform(NEW_FILE);
+    } else if ((selected = row_at(x, y)) >= 0) {
+        int dx = x - last_x, dy = y - last_y;
+        if (selected == previous && millis - last_click <= 450 && dx * dx + dy * dy <= 36) {
+            perform(OPEN);
+        } else {
+            last_row = selected;
+            last_click = millis;
+            last_x = x;
+            last_y = y;
+        }
     }
 }
 
 int main(void)
 {
-    if (GrOpen() < 0)
+    int connection = GrOpen();
+    if (connection < 0)
         return 1;
+    if (fcntl(connection, F_SETFD, FD_CLOEXEC) < 0) {
+        GrClose();
+        return 1;
+    }
+    desk_sync_appearance();
     GR_SCREEN_INFO screen;
     GrGetScreenInfo(&screen);
     window = GrNewWindowEx(GR_WM_PROPS_APPFRAME | GR_WM_PROPS_CAPTION | GR_WM_PROPS_CLOSEBOX |
                            GR_WM_PROPS_NOAUTOMOVE | GR_WM_PROPS_NORESIZE,
-                           "File Manager", GR_ROOT_WINDOW_ID, (screen.cols - W) / 2,
-                           (screen.rows - H - 38) / 2, W, H, DESK_CONTAINER);
+                           "File Manager", GR_ROOT_WINDOW_ID, (screen.cols - desk_px(W)) / 2,
+                           (screen.rows - desk_px(H + 38)) / 2, desk_px(W), desk_px(H), DESK_CONTAINER);
     gc = GrNewGC();
     GrSetGCUseBackground(gc, GR_FALSE);
+    desk_install_font(gc);
     GrSelectEvents(window, GR_EVENT_MASK_EXPOSURE | GR_EVENT_MASK_BUTTON_DOWN |
-                           GR_EVENT_MASK_KEY_DOWN | GR_EVENT_MASK_CLOSE_REQ);
+                           GR_EVENT_MASK_KEY_DOWN | GR_EVENT_MASK_CLOSE_REQ |
+                           GR_EVENT_MASK_TIMER | GR_EVENT_MASK_FOCUS_OUT);
     GrMapWindow(window);
     load_folder();
+    GrCreateTimer(window, 300);
     for (;;) {
         GR_EVENT event;
         GrGetNextEvent(&event);
         if (event.type == GR_EVENT_TYPE_CLOSE_REQ)
             break;
-        if (event.type == GR_EVENT_TYPE_BUTTON_DOWN && (event.button.changebuttons & GR_BUTTON_L))
-            click(event.button.x, event.button.y);
-        else if (event.type == GR_EVENT_TYPE_KEY_DOWN)
+        if (event.type == GR_EVENT_TYPE_TIMER) {
+            while (waitpid(-1, 0, WNOHANG) > 0) {}
+            if (!desk_sync_appearance())
+                continue;
+            desk_resize(window, W, H);
+        } else if (event.type == GR_EVENT_TYPE_FOCUS_OUT) {
+            context_count = 0;
+            last_row = -1;
+        } else if (event.type == GR_EVENT_TYPE_BUTTON_DOWN && (event.button.changebuttons & GR_BUTTON_L)) {
+            click(desk_dp(event.button.x), desk_dp(event.button.y), event.button.time);
+        } else if (event.type == GR_EVENT_TYPE_BUTTON_DOWN && (event.button.changebuttons & GR_BUTTON_R)) {
+            right_click(desk_dp(event.button.x), desk_dp(event.button.y));
+        } else if (event.type == GR_EVENT_TYPE_KEY_DOWN)
             key(event.keystroke.ch);
         else if (event.type != GR_EVENT_TYPE_EXPOSURE)
             continue;

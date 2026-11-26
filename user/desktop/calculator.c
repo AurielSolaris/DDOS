@@ -1,4 +1,4 @@
-#include "nano-X.h"
+#include "desk_ui.h"
 
 #include <math.h>
 #include <stdbool.h>
@@ -142,21 +142,15 @@ static bool press(struct calculator *calc, int key)
 
 static void fill(GR_DRAW_ID window, GR_GC_ID gc, int x, int y, int w, int h, GR_COLOR color)
 {
-    GrSetGCForeground(gc, color);
-    GrFillRect(window, gc, x, y, w, h);
+    desk_fill(window, gc, x, y, w, h, color);
 }
 
 static void label(GR_DRAW_ID window, GR_GC_ID gc, int x, int y, const char *value,
                   GR_COLOR color, bool centered)
 {
-    int length = strlen(value);
-    if (centered) {
-        GR_SIZE w, h, baseline;
-        GrGetGCTextSize(gc, (void *)value, length, GR_TFASCII, &w, &h, &baseline);
-        x -= w / 2;
-    }
-    GrSetGCForeground(gc, color);
-    GrText(window, gc, x, y, (void *)value, length, GR_TFASCII | GR_TFTOP);
+    if (centered)
+        x -= desk_text_width(gc, value) / 2;
+    desk_text(window, gc, x, y, value, color);
 }
 
 static void draw_key(GR_DRAW_ID window, GR_GC_ID gc, const struct button *button)
@@ -170,8 +164,10 @@ static void draw_key(GR_DRAW_ID window, GR_GC_ID gc, const struct button *button
     GR_COLOR ink = primary ? GR_RGB(11, 42, 41) : GR_RGB(240, 252, 253);
 
     GrSetGCForeground(gc, surface);
-    GrFillEllipse(window, gc, x + KEY_H / 2, y + KEY_H / 2, KEY_H / 2, KEY_H / 2 - 1);
-    GrFillEllipse(window, gc, x + w - KEY_H / 2, y + KEY_H / 2, KEY_H / 2, KEY_H / 2 - 1);
+    GrFillEllipse(window, gc, desk_px(x + KEY_H / 2), desk_px(y + KEY_H / 2),
+                  desk_px(KEY_H / 2), desk_px(KEY_H / 2 - 1));
+    GrFillEllipse(window, gc, desk_px(x + w - KEY_H / 2), desk_px(y + KEY_H / 2),
+                  desk_px(KEY_H / 2), desk_px(KEY_H / 2 - 1));
     fill(window, gc, x + KEY_H / 2, y + 1, w - KEY_H, KEY_H - 1, surface);
     fill(window, gc, x + KEY_H / 2, y + 2, w - KEY_H, 1,
          primary ? GR_RGB(207, 255, 241) : GR_RGB(95, 131, 143));
@@ -254,42 +250,58 @@ static void draw_display(GR_DRAW_ID window, GR_GC_ID gc, const struct calculator
         }
         draw_value(window, gc, calc->value);
     }
-    GrFlush();
+}
+
+static void draw_frame(GR_DRAW_ID window, GR_GC_ID gc, const struct calculator *calc, bool full)
+{
+    GrDdosFrame(GR_TRUE);
+    if (full)
+        draw_panel(window, gc);
+    draw_display(window, gc, calc);
+    GrDdosFrame(GR_FALSE);
 }
 
 int main(void)
 {
     if (GrOpen() < 0)
         return 1;
+    desk_sync_appearance();
     GR_SCREEN_INFO screen;
     GrGetScreenInfo(&screen);
     GR_WINDOW_ID window = GrNewWindowEx(GR_WM_PROPS_APPFRAME | GR_WM_PROPS_CAPTION |
                                          GR_WM_PROPS_CLOSEBOX | GR_WM_PROPS_NOAUTOMOVE |
                                          GR_WM_PROPS_NORESIZE,
                                          "Calculator", GR_ROOT_WINDOW_ID,
-                                         (screen.cols - WIDTH) / 2, (screen.rows - HEIGHT - 38) / 2,
-                                         WIDTH, HEIGHT, GR_RGB(20, 47, 61));
+                                         (screen.cols - desk_px(WIDTH)) / 2, (screen.rows - desk_px(HEIGHT + 38)) / 2,
+                                         desk_px(WIDTH), desk_px(HEIGHT), GR_RGB(20, 47, 61));
     GR_GC_ID gc = GrNewGC();
     GrSetGCUseBackground(gc, GR_FALSE);
+    desk_install_font(gc);
     GrSelectEvents(window, GR_EVENT_MASK_EXPOSURE | GR_EVENT_MASK_KEY_DOWN |
-                            GR_EVENT_MASK_BUTTON_DOWN | GR_EVENT_MASK_CLOSE_REQ);
+                            GR_EVENT_MASK_TIMER | GR_EVENT_MASK_BUTTON_DOWN | GR_EVENT_MASK_CLOSE_REQ);
     GrMapWindow(window);
+    GrCreateTimer(window, 300);
     GrSetFocus(window);
     struct calculator calc;
     reset(&calc);
     for (;;) {
         GR_EVENT event;
         GrGetNextEvent(&event);
+        if (event.type == GR_EVENT_TYPE_TIMER) {
+            if (!desk_sync_appearance())
+                continue;
+            desk_resize(window, WIDTH, HEIGHT);
+            event.type = GR_EVENT_TYPE_EXPOSURE;
+        }
         switch (event.type) {
         case GR_EVENT_TYPE_EXPOSURE:
-            draw_panel(window, gc);
-            draw_display(window, gc, &calc);
+            draw_frame(window, gc, &calc, true);
             break;
         case GR_EVENT_TYPE_KEY_DOWN:
             if (event.keystroke.ch == 'q' || event.keystroke.ch == 'Q')
                 goto done;
             if (press(&calc, event.keystroke.ch))
-                draw_display(window, gc, &calc);
+                draw_frame(window, gc, &calc, false);
             break;
         case GR_EVENT_TYPE_BUTTON_DOWN:
             for (unsigned i = 0; i < sizeof(buttons) / sizeof(buttons[0]); ++i) {
@@ -297,10 +309,10 @@ int main(void)
                 int x = MARGIN + button->col * PITCH_X;
                 int y = KEYPAD_TOP + button->row * PITCH_Y;
                 int width = KEY_W + (button->span - 1) * PITCH_X;
-                if (event.button.x >= x && event.button.x < x + width &&
-                    event.button.y >= y && event.button.y < y + KEY_H &&
+                if (desk_dp(event.button.x) >= x && desk_dp(event.button.x) < x + width &&
+                    desk_dp(event.button.y) >= y && desk_dp(event.button.y) < y + KEY_H &&
                     press(&calc, button->key)) {
-                    draw_display(window, gc, &calc);
+                    draw_frame(window, gc, &calc, false);
                     break;
                 }
             }

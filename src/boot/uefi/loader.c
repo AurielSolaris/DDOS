@@ -3,6 +3,7 @@
 
 #include "uefi_handoff.h"
 #include "x86_domains.h"
+#include "native.h"
 
 typedef uint64_t status_t;
 typedef void *handle_t;
@@ -154,8 +155,10 @@ status_t efi_main(handle_t image, struct system_table *system)
     size_t pages = disk_end_page + DDOS_X86_DOMAIN_PAGES + DDOS_X86_NATIVE_PAGES;
     uint64_t base = 0x7fffffff;
     status_t status = boot->allocate_pages(ALLOCATE_MAX_ADDRESS, LOADER_CODE, pages, &base);
-    if (status)
+    if (status) {
+        system->output->print(system->output, L"DDOS: could not reserve native task memory.\r\n");
         return status;
+    }
 
     uint8_t *memory = (uint8_t *)(uintptr_t)base;
     for (size_t i = 0; i < DDOS_DISK_OFFSET; ++i)
@@ -169,6 +172,16 @@ status_t efi_main(handle_t image, struct system_table *system)
         system->output->print(system->output, L"DDOS: no usable 32-bit GOP framebuffer.\r\n");
         boot->free_pages(base, pages);
         return EFI_UNSUPPORTED;
+    }
+
+    size_t shadow_size = (size_t)handoff->stride * handoff->height * 4;
+    if (shadow_size <= NATIVE_FB_MAX && shadow_size % PAGE_SIZE == 0) {
+        uint64_t shadow = 0x7fffffff;
+        if (!boot->allocate_pages(ALLOCATE_MAX_ADDRESS, LOADER_CODE, shadow_size / PAGE_SIZE, &shadow)) {
+            handoff->shadow = shadow;
+            for (size_t i = 0; i < shadow_size; ++i)
+                ((volatile uint8_t *)(uintptr_t)shadow)[i] = 0;
+        }
     }
 
     /* A stale memory-map key can result from firmware exit callbacks. */

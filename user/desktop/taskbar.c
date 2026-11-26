@@ -11,8 +11,8 @@
 
 enum {
     BAR_H = 38, START_W = 104, TILE_W = 108, TILE_H = 88,
-    MENU_W = 304, MENU_H = 344, SEARCH_Y = 16,
-    ROW_TOP = 72, ROW_H = 46, POWER_Y = 272,
+    MENU_W = 304, MENU_H = 436, SEARCH_Y = 16,
+    ROW_TOP = 72, ROW_H = 46, POWER_Y = 364,
 };
 
 struct app {
@@ -27,19 +27,22 @@ static struct app apps[] = {
     {"Settings", "/bin/settings", "system info about", ICON_SETTINGS, 0, 0},
     {"Task Manager", "/bin/task_mgr", "ram memory processes", ICON_TASKS, 0, 0},
     {"File Manager", "/bin/file_manager", "files explorer drives", ICON_FILES, 0, 0},
+    {"Notepad", "/bin/notepad", "notes text editor", ICON_NOTES, 0, 0},
+    {"Snake", "/bin/snake", "game arcade", ICON_SNAKE, 0, 0},
 };
 
 enum { APP_COUNT = sizeof(apps) / sizeof(apps[0]) };
 
 static GR_WINDOW_ID bar, menu;
 static GR_GC_ID gc;
-static bool menu_open;
+static bool menu_open, launcher;
 static char query[28];
 static unsigned selected;
 static const char *notice;
 
 static void paint_bar(int width)
 {
+    GrDdosFrame(GR_TRUE);
     char clock[24] = "Clock unavailable", date[32] = "";
     struct timespec now;
     struct tm calendar;
@@ -58,11 +61,12 @@ static void paint_bar(int width)
     int date_x = clock_x - 18 - desk_text_width(gc, date);
     desk_text(bar, gc, date_x, 13, date, DESK_MUTED);
     desk_text(bar, gc, clock_x, 13, clock, DESK_ON_SURFACE);
-    GrFlush();
+    GrDdosFrame(GR_FALSE);
 }
 
 static void paint_tile(const struct app *app)
 {
+    GrDdosFrame(GR_TRUE);
     desk_panel(app->tile, gc, TILE_W, TILE_H);
     desk_round(app->tile, gc, 37, 10, 34, 34, 9, DESK_HIGH);
     desk_icon(app->tile, gc, app->icon, 46, 19, 2);
@@ -70,44 +74,65 @@ static void paint_tile(const struct app *app)
               app->icon == ICON_CALCULATOR ? 51 : 60, app->title, DESK_ON_SURFACE);
     if (app->icon == ICON_CALCULATOR)
         desk_text(app->tile, gc, (TILE_W - desk_text_width(gc, "F2")) / 2, 70, "F2", DESK_MUTED);
-    GrFlush();
+    GrDdosFrame(GR_FALSE);
 }
 
-static bool contains(const char *text)
+static unsigned match(const char *text)
 {
     if (!*query)
-        return true;
-    for (; *text; ++text) {
-        unsigned i = 0;
-        while (query[i] && text[i] &&
-               tolower((unsigned char)text[i]) == tolower((unsigned char)query[i]))
-            ++i;
-        if (!query[i])
-            return true;
+        return 1;
+    unsigned best = 0, matched = 0, gap = 0;
+    for (unsigned at = 0; text[at]; ++at) {
+        unsigned len = 0;
+        while (query[len] && text[at + len] &&
+               tolower((unsigned char)text[at + len]) == tolower((unsigned char)query[len]))
+            ++len;
+        if (!query[len]) {
+            unsigned score = at == 0 ? 300 : text[at - 1] == ' ' ? 280 : 250;
+            if (score > best)
+                best = score;
+        }
+        if (query[matched] &&
+            tolower((unsigned char)text[at]) == tolower((unsigned char)query[matched]))
+            ++matched;
+        else if (matched && query[matched])
+            ++gap;
     }
-    return false;
+    return best ? best : query[matched] ? 0 : 100 - (gap > 90 ? 90 : gap);
 }
 
 static unsigned visible_apps(struct app *visible[APP_COUNT])
 {
-    unsigned count = 0;
+    unsigned count = 0, ranks[APP_COUNT];
     for (unsigned i = 0; i < APP_COUNT; ++i) {
-        if (contains(apps[i].title) || contains(apps[i].keywords))
-            visible[count++] = &apps[i];
+        unsigned rank = match(apps[i].title), other = match(apps[i].keywords);
+        if (other && other - 1 > rank)
+            rank = other - 1;
+        if (!rank)
+            continue;
+        unsigned slot = count++;
+        while (slot && ranks[slot - 1] < rank) {
+            visible[slot] = visible[slot - 1];
+            ranks[slot] = ranks[slot - 1];
+            --slot;
+        }
+        visible[slot] = &apps[i];
+        ranks[slot] = rank;
     }
     return count;
 }
 
 static void paint_menu(void)
 {
+    GrDdosFrame(GR_TRUE);
     struct app *visible[APP_COUNT];
     unsigned count = visible_apps(visible);
-    desk_panel(menu, gc, MENU_W, MENU_H);
+    desk_panel(menu, gc, MENU_W, launcher ? POWER_Y : MENU_H);
     desk_round(menu, gc, 16, SEARCH_Y, MENU_W - 32, 40, 12, DESK_SURFACE);
     GrSetGCForeground(gc, DESK_PRIMARY);
-    GrEllipse(menu, gc, 33, SEARCH_Y + 18, 5, 5);
-    GrLine(menu, gc, 37, SEARCH_Y + 22, 41, SEARCH_Y + 26);
-    desk_text(menu, gc, 51, SEARCH_Y + 13, *query ? query : "Search apps",
+    GrEllipse(menu, gc, desk_px(33), desk_px(SEARCH_Y + 18), desk_px(5), desk_px(5));
+    GrLine(menu, gc, desk_px(37), desk_px(SEARCH_Y + 22), desk_px(41), desk_px(SEARCH_Y + 26));
+    desk_text(menu, gc, 51, SEARCH_Y + 13, *query ? query : launcher ? "Type to find an app" : "Search apps",
               *query ? DESK_ON_SURFACE : DESK_MUTED);
 
     for (unsigned i = 0; i < count; ++i) {
@@ -120,14 +145,16 @@ static void paint_menu(void)
     if (!count)
         desk_text(menu, gc, 26, ROW_TOP + 12, "No matching apps", DESK_MUTED);
 
-    desk_fill(menu, gc, 16, POWER_Y - 12, MENU_W - 32, 1, DESK_OUTLINE);
-    desk_round(menu, gc, 16, POWER_Y, 130, 40, 12, DESK_CONTAINER);
-    desk_round(menu, gc, MENU_W - 146, POWER_Y, 130, 40, 12, DESK_CONTAINER);
-    desk_text(menu, gc, 43, POWER_Y + 13, "Restart", DESK_PRIMARY);
-    desk_text(menu, gc, MENU_W - 119, POWER_Y + 13, "Shutdown", DESK_ERROR);
-    if (notice)
-        desk_text(menu, gc, 18, MENU_H - 20, notice, DESK_ERROR);
-    GrFlush();
+    if (!launcher) {
+        desk_fill(menu, gc, 16, POWER_Y - 12, MENU_W - 32, 1, DESK_OUTLINE);
+        desk_round(menu, gc, 16, POWER_Y, 130, 40, 12, DESK_CONTAINER);
+        desk_round(menu, gc, MENU_W - 146, POWER_Y, 130, 40, 12, DESK_CONTAINER);
+        desk_text(menu, gc, 43, POWER_Y + 13, "Restart", DESK_PRIMARY);
+        desk_text(menu, gc, MENU_W - 119, POWER_Y + 13, "Shutdown", DESK_ERROR);
+        if (notice)
+            desk_text(menu, gc, 18, MENU_H - 20, notice, DESK_ERROR);
+    }
+    GrDdosFrame(GR_FALSE);
 }
 
 static GR_WINDOW_ID find_window(GR_WINDOW_ID root, const char *title)
@@ -189,7 +216,7 @@ static void toggle_menu(int width)
 
 static void menu_click(int x, int y, int width)
 {
-    if (y >= POWER_Y && y < POWER_Y + 40) {
+    if (!launcher && y >= POWER_Y && y < POWER_Y + 40) {
         unsigned action = x >= 16 && x < 146 ? DDOS_RESTART :
                           x >= MENU_W - 146 && x < MENU_W - 16 ? DDOS_POWER_OFF : 0;
         if (action && syscall(DDOS_DESKTOP_POWER, action) < 0) {
@@ -218,8 +245,8 @@ static void menu_key(unsigned key, int width)
         open_app(visible[selected]);
         return;
     }
-    if (key == '\t' && count) {
-        selected = (selected + 1) % count;
+    if ((key == '\t' || key == MWKEY_DOWN || key == MWKEY_UP) && count) {
+        selected = (selected + (key == MWKEY_UP ? count - 1 : 1)) % count;
     } else if (key == MWKEY_BACKSPACE && length) {
         query[length - 1] = 0;
         selected = 0;
@@ -233,6 +260,28 @@ static void menu_key(unsigned key, int width)
     paint_menu();
 }
 
+static void place_menu(const GR_SCREEN_INFO *screen)
+{
+    int height = launcher ? POWER_Y : MENU_H;
+    GrMoveWindow(menu, launcher ? (screen->cols - desk_px(MENU_W)) / 2 : desk_px(8),
+                 launcher ? (screen->rows - desk_px(height + BAR_H)) / 2
+                          : screen->rows - desk_px(BAR_H + height + 8));
+    GrResizeWindow(menu, desk_px(MENU_W), desk_px(height));
+}
+
+static void place_windows(const GR_SCREEN_INFO *screen)
+{
+    GrMoveWindow(bar, 0, screen->rows - desk_px(BAR_H));
+    GrResizeWindow(bar, screen->cols, desk_px(BAR_H));
+    place_menu(screen);
+    for (unsigned i = 0; i < APP_COUNT; ++i) {
+        GrMoveWindow(apps[i].tile, desk_px(24 + i / 4 * (TILE_W + 12)),
+                     desk_px(24 + i % 4 * (TILE_H + 12)));
+        GrResizeWindow(apps[i].tile, desk_px(TILE_W), desk_px(TILE_H));
+        paint_tile(&apps[i]);
+    }
+}
+
 int main(void)
 {
     int connection = GrOpen();
@@ -242,6 +291,7 @@ int main(void)
         GrClose();
         return 1;
     }
+    desk_sync_appearance();
     GR_SCREEN_INFO screen;
     GrGetScreenInfo(&screen);
     GR_WM_PROPERTIES wallpaper = {.flags = GR_WM_FLAGS_BACKGROUND, .background = DESK_WALL};
@@ -251,30 +301,44 @@ int main(void)
     GR_WM_PROPS fixed = GR_WM_PROPS_NODECORATE | GR_WM_PROPS_NOMOVE |
                         GR_WM_PROPS_NORESIZE | GR_WM_PROPS_NOAUTOMOVE;
     bar = GrNewWindowEx(fixed | GR_WM_PROPS_NOFOCUS, "DDOS taskbar", GR_ROOT_WINDOW_ID,
-                       0, screen.rows - BAR_H, screen.cols, BAR_H, DESK_SURFACE);
+                       0, screen.rows - desk_px(BAR_H), screen.cols, desk_px(BAR_H), DESK_SURFACE);
     menu = GrNewWindowEx(fixed, "DDOS app menu", GR_ROOT_WINDOW_ID,
-                        8, screen.rows - BAR_H - MENU_H - 8, MENU_W, MENU_H, DESK_CONTAINER);
+                        desk_px(8), screen.rows - desk_px(BAR_H + MENU_H + 8),
+                        desk_px(MENU_W), desk_px(MENU_H), DESK_CONTAINER);
     gc = GrNewGC();
     GrSetGCUseBackground(gc, GR_FALSE);
+    desk_install_font(gc);
     GrSelectEvents(bar, GR_EVENT_MASK_EXPOSURE | GR_EVENT_MASK_TIMER |
                          GR_EVENT_MASK_BUTTON_DOWN | GR_EVENT_MASK_KEY_DOWN);
     GrSelectEvents(menu, GR_EVENT_MASK_EXPOSURE | GR_EVENT_MASK_BUTTON_DOWN |
                           GR_EVENT_MASK_KEY_DOWN | GR_EVENT_MASK_FOCUS_OUT);
     GrGrabKey(bar, MWKEY_F2, GR_GRAB_HOTKEY_EXCLUSIVE);
+    GrGrabKey(bar, MWKEY_F3, GR_GRAB_HOTKEY_EXCLUSIVE);
 
     for (unsigned i = 0; i < APP_COUNT; ++i) {
         apps[i].tile = GrNewWindowEx(fixed | GR_WM_PROPS_NOFOCUS, "Desktop shortcut",
-                                     GR_ROOT_WINDOW_ID, 24, 24 + i * (TILE_H + 12),
-                                     TILE_W, TILE_H, DESK_CONTAINER);
+                                     GR_ROOT_WINDOW_ID, desk_px(24 + i / 4 * (TILE_W + 12)),
+                                     desk_px(24 + i % 4 * (TILE_H + 12)),
+                                     desk_px(TILE_W), desk_px(TILE_H), DESK_CONTAINER);
         GrSelectEvents(apps[i].tile, GR_EVENT_MASK_EXPOSURE | GR_EVENT_MASK_BUTTON_DOWN);
         GrMapWindow(apps[i].tile);
     }
     GrMapWindow(bar);
     GrRaiseWindow(bar);
-    GrCreateTimer(bar, 1000);
+    GrCreateTimer(bar, 500);
+    time_t displayed_minute = -1;
     for (;;) {
         GR_EVENT event;
         GrGetNextEvent(&event);
+        bool timer = event.type == GR_EVENT_TYPE_TIMER;
+        bool rescaled = timer && desk_sync_appearance();
+        time_t minute = timer ? time(0) / 60 : displayed_minute;
+        if (rescaled) {
+            place_windows(&screen);
+            if (menu_open)
+                paint_menu();
+        }
+        int width = desk_dp(screen.cols - 1) + 1;
         for (unsigned i = 0; i < APP_COUNT; ++i) {
             if (apps[i].child > 0 && waitpid(apps[i].child, 0, WNOHANG) == apps[i].child)
                 apps[i].child = 0;
@@ -283,29 +347,42 @@ int main(void)
             if (event.type == GR_EVENT_TYPE_BUTTON_DOWN && event.button.wid == apps[i].tile &&
                 (event.button.changebuttons & GR_BUTTON_L)) {
                 if (menu_open)
-                    toggle_menu(screen.cols);
+                    toggle_menu(width);
                 open_app(&apps[i]);
             }
         }
-        if (event.type == GR_EVENT_TYPE_TIMER ||
-            (event.type == GR_EVENT_TYPE_EXPOSURE && event.exposure.wid == bar))
-            paint_bar(screen.cols);
-        else if (event.type == GR_EVENT_TYPE_EXPOSURE && event.exposure.wid == menu && menu_open)
+        if ((timer && (rescaled || minute != displayed_minute)) ||
+            (event.type == GR_EVENT_TYPE_EXPOSURE && event.exposure.wid == bar)) {
+            displayed_minute = minute;
+            paint_bar(width);
+        } else if (event.type == GR_EVENT_TYPE_EXPOSURE && event.exposure.wid == menu && menu_open)
             paint_menu();
         else if (event.type == GR_EVENT_TYPE_BUTTON_DOWN && (event.button.changebuttons & GR_BUTTON_L)) {
-            if (event.button.wid == bar && event.button.x < START_W)
-                toggle_menu(screen.cols);
-            else if (event.button.wid == menu && menu_open)
-                menu_click(event.button.x, event.button.y, screen.cols);
+            if (event.button.wid == bar && desk_dp(event.button.x) < START_W) {
+                if (!menu_open) {
+                    launcher = false;
+                    place_menu(&screen);
+                }
+                toggle_menu(width);
+            } else if (event.button.wid == menu && menu_open)
+                menu_click(desk_dp(event.button.x), desk_dp(event.button.y), width);
         } else if (event.type == GR_EVENT_TYPE_FOCUS_OUT && event.general.wid == menu && menu_open) {
-            toggle_menu(screen.cols);
+            toggle_menu(width);
         } else if (event.type == GR_EVENT_TYPE_KEY_DOWN) {
-            if (event.keystroke.ch == MWKEY_F2) {
+            if (event.keystroke.ch == MWKEY_F3) {
+                if (menu_open && !launcher)
+                    toggle_menu(width);
+                if (!menu_open) {
+                    launcher = true;
+                    place_menu(&screen);
+                }
+                toggle_menu(width);
+            } else if (event.keystroke.ch == MWKEY_F2) {
                 if (menu_open)
-                    toggle_menu(screen.cols);
+                    toggle_menu(width);
                 open_app(&apps[0]);
             } else if (event.keystroke.wid == menu && menu_open) {
-                menu_key(event.keystroke.ch, screen.cols);
+                menu_key(event.keystroke.ch, width);
             }
         }
     }

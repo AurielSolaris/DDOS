@@ -40,7 +40,7 @@ _start:
     int 0x15
     pop ds
     jc .no_extended
-    cmp ax, 25672              ; 25 one-MiB images plus 72 KiB of metadata.
+    cmp ax, 27840              ; 27 MiB of task and staging images plus 192 KiB of metadata.
     jb .no_extended
     mov byte [extended_available], 1
 .no_extended:

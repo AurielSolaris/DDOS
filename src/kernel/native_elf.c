@@ -6,7 +6,6 @@
 enum {
     PT_LOAD = 1, PT_DYNAMIC = 2, PT_INTERP = 3, PF_X = 1, PF_W = 2,
     ELF_HEADER = 52, PROGRAM_HEADER = 32,
-    CAPACITY = NATIVE_PAGES * NATIVE_PAGE,
 };
 
 static bool read_at(const struct ext2_inode *file, uint32_t offset,
@@ -78,7 +77,7 @@ bool native_load_elf(struct native_space *space, const struct ext2_inode *file,
         return false;
     uint32_t base = first & ~(NATIVE_PAGE - 1);
     bool legacy = !base && last <= 2 * NATIVE_PAGE;
-    unsigned capacity = legacy ? 8 * NATIVE_PAGE : CAPACITY;
+    unsigned capacity = legacy ? 8 * NATIVE_PAGE : space->capacity;
     unsigned stack = legacy ? NATIVE_PAGE : 16 * NATIVE_PAGE;
     /* Keep the translated segment base above the kernel bridge mappings. */
     if (base > 0x40000000u - capacity || last - base > capacity - stack - 3 * NATIVE_PAGE)
@@ -87,8 +86,8 @@ bool native_load_elf(struct native_space *space, const struct ext2_inode *file,
     if (legacy)
         heap_start = 2 * NATIVE_PAGE;
 
-    uint8_t permissions[NATIVE_PAGES];
-    for (unsigned i = 0; i < NATIVE_PAGES; ++i)
+    uint8_t permissions[NATIVE_MAX_PAGES];
+    for (unsigned i = 0; i < NATIVE_MAX_PAGES; ++i)
         permissions[i] = 0;
     for (unsigned i = 0; i < capacity; ++i)
         space->stage[i] = 0;
@@ -111,7 +110,7 @@ bool native_load_elf(struct native_space *space, const struct ext2_inode *file,
         permissions[page] = 3;
 
     native_commit(space, base, capacity);
-    for (unsigned page = 0; page < NATIVE_PAGES; ++page)
+    for (unsigned page = 0; page < NATIVE_MAX_PAGES; ++page)
         native_page(space, page, permissions[page]);
     elf->entry = entry;
     elf->phdr = phdr;

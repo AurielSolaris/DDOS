@@ -127,7 +127,7 @@ def main():
         args.microwindows = BUILD / "microwindows"
     if args.desktop and (args.microwindows is None or
                          any(not (args.microwindows / name).is_file()
-                             for name in ("nano-X", "nanowm", "taskbar", "calculator", "settings", "task_mgr", "file_manager"))):
+                             for name in ("nano-X", "nanowm", "taskbar", "calculator", "settings", "task_mgr", "file_manager", "notepad", "snake"))):
         parser.error("Desktop binaries are missing. Run sh tools/build-microwindows.sh or pass --microwindows.")
     if args.system_image.resolve() in (BUILD / "data.ext2", BUILD / "ddos.img"):
         parser.error("--system-image must be separate from the persistent data and boot images")

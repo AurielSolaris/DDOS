@@ -5,9 +5,8 @@
 #include <stdint.h>
 
 enum {
-    NATIVE_PAGE = 4096, NATIVE_PAGES = 256,
-    NATIVE_FB_OFFSET = NATIVE_PAGES * NATIVE_PAGE,
-    NATIVE_FB_MAX = 8 * 1024 * 1024,
+    NATIVE_PAGE = 4096, NATIVE_PAGES = 256, NATIVE_MAX_PAGES = 512,
+    NATIVE_FB_MAX = 8 * 1024 * 1024, NATIVE_FB_SHADOW = 4,
     NATIVE_TRAP = 0x40000000, NATIVE_TIMER = 0x40000001,
 };
 
@@ -19,8 +18,8 @@ struct native_frame {
 
 struct native_space {
     uint8_t *image, *stage;
-    uint32_t base, size, tls_base, tls_limit, fb_access;
-    uint8_t access[NATIVE_PAGES];
+    uint32_t base, size, capacity, tls_base, tls_limit, fb_access;
+    uint8_t access[NATIVE_MAX_PAGES];
     _Alignas(16) uint8_t fpu[512];
     struct native_frame frame;
 };
@@ -31,13 +30,14 @@ struct native_elf {
 };
 
 struct native_fb {
-    uint32_t physical, width, height, stride, size, red, blue;
+    uint32_t physical, shadow, width, height, stride, size, red, blue;
 };
-void native_fb_configure(uint32_t, uint32_t, uint32_t, uint32_t, uint32_t);
+void native_fb_configure(uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t);
 const struct native_fb *native_framebuffer(void);
+void native_fb_present(unsigned x, unsigned y, unsigned width, unsigned height);
 
 void *native_init(void);
-void native_space_init(struct native_space *, unsigned slot);
+void native_space_init(struct native_space *, unsigned slot, bool desktop_server);
 void native_reset_fpu(struct native_space *);
 void native_page(struct native_space *, unsigned slot, unsigned permissions);
 void native_commit(struct native_space *, uint32_t base, uint32_t size);
