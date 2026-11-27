@@ -176,13 +176,8 @@ static void draw_key(GR_DRAW_ID window, GR_GC_ID gc, const struct button *button
 
 static void draw_panel(GR_DRAW_ID window, GR_GC_ID gc)
 {
-    for (int y = 0; y < HEIGHT; y += 12) {
-        int tint = (HEIGHT - y) / 12;
-        int height = HEIGHT - y < 12 ? HEIGHT - y : 12;
-        fill(window, gc, 0, y, WIDTH, height, GR_RGB(17 + tint, 35 + tint, 48 + tint));
-    }
+    desk_panel(window, gc, WIDTH, HEIGHT);
     fill(window, gc, 0, 0, WIDTH, 1, GR_RGB(128, 196, 194));
-    fill(window, gc, 0, 1, WIDTH, 1, GR_RGB(86, 135, 141));
     fill(window, gc, 0, 2, 1, HEIGHT - 2, GR_RGB(88, 136, 144));
     fill(window, gc, WIDTH - 1, 2, 1, HEIGHT - 2, GR_RGB(73, 117, 131));
     for (unsigned i = 0; i < sizeof(buttons) / sizeof(buttons[0]); ++i)
@@ -279,6 +274,7 @@ int main(void)
     desk_install_font(gc);
     GrSelectEvents(window, GR_EVENT_MASK_EXPOSURE | GR_EVENT_MASK_KEY_DOWN |
                             GR_EVENT_MASK_TIMER | GR_EVENT_MASK_BUTTON_DOWN | GR_EVENT_MASK_CLOSE_REQ);
+    desk_capture_glass(window, gc);
     GrMapWindow(window);
     GrCreateTimer(window, 300);
     GrSetFocus(window);

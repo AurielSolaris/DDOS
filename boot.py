@@ -55,7 +55,14 @@ def main():
     parser.add_argument("--debug-log", type=Path, help="write guest debug console output to a file")
     parser.add_argument("--system-image", type=Path, default=SYSTEM, help="ext2 system image to boot")
     parser.add_argument("--usb-image", type=Path, help="attach a raw image as a USB 2.0 storage device")
+    parser.add_argument("--ram-mib", type=int, default=4096, help="guest RAM in MiB (default: 4096)")
+    parser.add_argument("--vram-mib", type=int, choices=(16, 32, 64, 128, 256, 512),
+                        default=512, help="Standard VGA memory in MiB (default: 512)")
     args = parser.parse_args()
+    if args.ram_mib < 64:
+        parser.error("--ram-mib must be at least 64")
+    machine = ("-m", str(args.ram_mib), "-vga", "none",
+               "-device", f"VGA,vgamem_mb={args.vram_mib}")
     args.uefi |= args.calculator
     startup = ("-fw_cfg", "name=opt/ddos/calculator,string=1") if args.calculator else ()
     debug = ()
@@ -101,7 +108,7 @@ def main():
                 vars_option = vars_path.as_posix().replace(",", ",,")
                 esp_option = esp.as_posix().replace(",", ",,")
                 command = (
-                    qemu,
+                    qemu, *machine,
                     "-drive", f"if=pflash,unit=0,format=raw,readonly=on,file={code_path}",
                     "-drive", f"if=pflash,unit=1,format=raw,file={vars_option}",
                     "-drive", f"file=fat:rw:{esp_option},format=raw,if=ide,index=0", *data_disk, *startup, *debug,
@@ -110,7 +117,7 @@ def main():
                 boot_image = scratch / "ddos.img"
                 shutil.copyfile(ROOT / IMAGE, boot_image)
                 boot_option = boot_image.as_posix().replace(",", ",,")
-                command = (qemu, "-drive", f"file={boot_option},format=raw,if=floppy",
+                command = (qemu, *machine, "-drive", f"file={boot_option},format=raw,if=floppy",
                            "-boot", "a", *data_disk, *debug)
             return subprocess.run((*command, *usb), cwd=ROOT).returncode
     except OSError as error:

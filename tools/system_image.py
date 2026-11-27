@@ -127,7 +127,7 @@ def install_directory(fs, number, parent, source):
     fs.directory(number, parent, entries)
 
 
-def build_system(output, app, files, busybox, runit=None, microwindows=None):
+def build_system(output, app, files, busybox, runit=None, microwindows=None, wallpaper=None):
     fs = SystemImage()
     binary, configs, temporary, fonts = (fs.reserve_inode() for _ in range(4))
     programs = {"ddosapp": app.read_bytes()}
@@ -153,8 +153,11 @@ def build_system(output, app, files, busybox, runit=None, microwindows=None):
     install_directory(fs, configs, 2, system / "etc")
     install_directory(fs, fonts, 2, system / "fonts")
     fs.directory(temporary, 2, [])
-    fs.directory(2, 2, [("bin", binary, 2), ("etc", configs, 2), ("tmp", temporary, 2),
-                        ("fonts", fonts, 2)])
+    root = [("bin", binary, 2), ("etc", configs, 2), ("tmp", temporary, 2),
+            ("fonts", fonts, 2)]
+    if wallpaper is not None:
+        root.append(("wallpaper.bmp", fs.file(wallpaper, 0o644), 1))
+    fs.directory(2, 2, root)
     result = fs.finish()
     with NamedTemporaryFile(dir=output.parent, prefix="system-", delete=False) as temporary:
         path = Path(temporary.name)

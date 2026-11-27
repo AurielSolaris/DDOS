@@ -4,11 +4,30 @@ DDOS (DOS Derived OS) is a C and NASM operating system based on the published
 MS-DOS 4.0 source. It has a 32-bit x86 kernel, BIOS and x64 UEFI boot paths, a
 DOS-compatible real-mode program loader, and a persistent ext2 data volume.
 
+## Project website
+
+The [site directory](site/) contains the DDOS project website, built with
+React, TanStack Router, SCSS, and a WebGL wallpaper with a CSS fallback.
+It includes an interactive desktop preview and a QEMU build guide.
+
+```sh
+cd site
+bun install
+bun run dev
+```
+
+Run `bun run build` to generate `site/dist/`. For Vercel, set the Root
+Directory to `site`. See the [website README](site/README.md) for details.
+
 ## Build and run
 
 Install Python 3, NASM, LLVM with Clang, ld.lld, lld-link, and llvm-objcopy, and
 QEMU. The UEFI launch also needs EDK II or OVMF firmware. The build runs natively
-on Windows.
+on Windows. The QEMU launcher defaults to 4 GiB of guest RAM and
+512 MiB of emulated Standard VGA memory. Override these defaults with
+`--ram-mib` and `--vram-mib`, for example
+`python boot.py --uefi --ram-mib 512 --vram-mib 32`.
+The glass effect uses system RAM and the software renderer.
 
 ```powershell
 python build.py
@@ -24,11 +43,33 @@ python build.py --desktop
 python boot.py --uefi
 ```
 
+To import a downloaded wallpaper, install Pillow and rebuild the system image
+with the desktop binaries already built.
+
+```powershell
+python -m pip install Pillow
+python build.py --desktop --wallpaper "C:\Pictures\wallpaper.jpg"
+python boot.py --uefi
+```
+
+The importer accepts JPEG, PNG, WebP, and other Pillow-readable formats. It
+center-crops to 16:9 and stores a 320x180 BMP on B:. Nano-X scales it to the
+screen, and the frosted panels sample its colors. For a persistent override,
+place an uncompressed, bottom-up 24-bit BMP up to 320x180 at
+`D:/wallpaper.bmp` and reopen NanoWM. With neither image present, DDOS uses
+its built-in blue background. The repository ships the built-in background.
+
 At the DDOS prompt, enter `NANOWM`. Click the **DDOS** button at the left
 of the taskbar to open the app menu. Type a search and press Enter to open
 the selected result, or click any visible result. Tab cycles through
 matches. Calculator, Settings, Task Manager, File Manager, Notepad, and
-Snake also have desktop icons. **Restart** and **Shutdown** are available
+Snake also have desktop icons. Desktop and launcher icons are larger,
+and NanoWM title bars, window borders, and close buttons have more room.
+Buttons, cards, desktop tiles, and the launcher use rounded corners.
+The dark blue panels sample the screen behind them when they open,
+blur the sample, and blend it with a navy tint. The launcher refreshes
+its sample on every opening. Open panels retain their snapshot when
+they move. **Restart** and **Shutdown** are available
 at the bottom of the popup on the default QEMU PC. Esc returns to the DDOS
 prompt. Win/Cmd+R opens the centered, keyboard-first launcher. Type a
 name or part of one, use the arrow keys or Tab to select, and press Enter.
@@ -447,7 +488,7 @@ filename so the destination is available.
 | BusyBox and runit | Upstream [BusyBox](https://busybox.net/) supplies Hush and its configured applets. Upstream [runit](https://github.com/g-pape/runit) is cross-built by DDOS. The applet configuration, stage scripts, shell service, and image integration are local. |
 | Frame presentation | DDOS shadow-buffer and changed-rectangle copy for GOP, guided by [Linux DRM damage handling](https://github.com/torvalds/linux/blob/master/drivers/gpu/drm/drm_plane.c) and [FreeBSD's EFI framebuffer console](https://github.com/freebsd/freebsd-src/blob/main/sys/dev/vt/hw/efifb/efifb.c). |
 | Graphics server and window manager | [Microwindows](https://github.com/ghaerr/microwindows) supplies Nano-X and the floating NanoWM. DDOS provides its input adapters, build configuration, desktop startup, and blue window colors. |
-| App menu, taskbar, Calculator, Settings, Task Manager, File Manager, Notepad, Snake, and icons | Original DDOS desktop components. File Manager uses familiar Explorer-style interactions, Notepad follows plain-text editor conventions, and Snake uses the classic grid-based game rules. Their blue tonal palette uses [Material 3 color roles](https://m3.material.io/styles/color/the-color-system). The layered tint and highlights adapt [Apple HIG materials guidance](https://developer.apple.com/design/human-interface-guidelines/materials) to Nano-X drawing. |
+| App menu, taskbar, Calculator, Settings, Task Manager, File Manager, Notepad, Snake, and icons | Original DDOS desktop components. File Manager uses familiar Explorer-style interactions, Notepad follows plain-text editor conventions, and Snake uses the classic grid-based game rules. Their blue tonal palette uses [Material 3 color roles](https://m3.material.io/styles/color/the-color-system). The dark tint over a blurred screen snapshot adapts the [UX Pilot glassmorphism guide](https://uxpilot.ai/blogs/glassmorphism-ui) and [Apple HIG materials guidance](https://developer.apple.com/design/human-interface-guidelines/materials) to Nano-X drawing. |
 | Desktop typeface and font loading | The bundled [Inter](https://github.com/rsms/inter) Regular is an ASCII subset installed as `B:/fonts/Inter.woff` under the [SIL Open Font License](system/fonts/Inter-OFL.txt). [FreeType](https://freetype.org/) provides OpenType and WOFF decoding through Nano-X under the [FreeType License](system/fonts/FreeType-FTL.txt). |
 | Quick launcher | Original DDOS taskbar launcher inspired by [Rofi](https://github.com/davatorium/rofi), using Nano-X and native app launching. |
 | Console typeface | Public-domain [font8x8](https://github.com/dhepper/font8x8), included in the graphics console. |

@@ -492,6 +492,7 @@ int main(void)
     GrSelectEvents(window, GR_EVENT_MASK_EXPOSURE | GR_EVENT_MASK_BUTTON_DOWN |
                            GR_EVENT_MASK_KEY_DOWN | GR_EVENT_MASK_CLOSE_REQ |
                            GR_EVENT_MASK_TIMER | GR_EVENT_MASK_FOCUS_OUT);
+    desk_capture_glass(window, gc);
     GrMapWindow(window);
     load_folder();
     GrCreateTimer(window, 300);

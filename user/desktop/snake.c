@@ -179,6 +179,7 @@ int main(void)
     desk_install_font(gc);
     GrSelectEvents(window, GR_EVENT_MASK_EXPOSURE | GR_EVENT_MASK_BUTTON_DOWN |
                            GR_EVENT_MASK_KEY_DOWN | GR_EVENT_MASK_CLOSE_REQ | GR_EVENT_MASK_TIMER);
+    desk_capture_glass(window, gc);
     GrMapWindow(window);
     GrSetFocus(window);
     GrCreateTimer(window, 50);

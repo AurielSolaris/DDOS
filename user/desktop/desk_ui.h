@@ -100,16 +100,16 @@ static inline void desk_resize(GR_WINDOW_ID window, int width, int height)
 }
 
 enum {
-    DESK_SURFACE = GR_RGB(17, 27, 45),
-    DESK_CONTAINER = GR_RGB(27, 42, 65),
-    DESK_HIGH = GR_RGB(39, 59, 87),
-    DESK_OUTLINE = GR_RGB(91, 122, 162),
+    DESK_SURFACE = GR_RGB(5, 14, 34),
+    DESK_CONTAINER = GR_RGB(9, 27, 57),
+    DESK_HIGH = GR_RGB(15, 48, 91),
+    DESK_OUTLINE = GR_RGB(56, 110, 171),
     DESK_ON_SURFACE = GR_RGB(234, 243, 255),
     DESK_MUTED = GR_RGB(180, 199, 227),
-    DESK_PRIMARY = GR_RGB(174, 205, 255),
+    DESK_PRIMARY = GR_RGB(93, 191, 255),
     DESK_ON_PRIMARY = GR_RGB(15, 38, 74),
     DESK_ERROR = GR_RGB(255, 189, 189),
-    DESK_WALL = GR_RGB(26, 62, 109),
+    DESK_WALL = GR_RGB(9, 19, 49),
 };
 enum desk_icon { ICON_DDOS, ICON_CALCULATOR, ICON_SETTINGS, ICON_TASKS, ICON_FILES, ICON_NOTES, ICON_SNAKE };
 
@@ -183,28 +183,132 @@ static inline void desk_text(GR_DRAW_ID id, GR_GC_ID gc, int x, int y,
     GrText(id, gc, desk_px(x), desk_px(y), (void *)text, strlen(text), GR_TFASCII | GR_TFTOP);
 }
 
+static inline int desk_corner_inset(int radius, int row)
+{
+    /* Check the center of each pixel against the quarter circle. */
+    int dy = 2 * (radius - row) - 1;
+    int inset = 0;
+    while (inset < radius) {
+        int dx = 2 * (radius - inset) - 1;
+        if (dx * dx + dy * dy <= 4 * radius * radius)
+            break;
+        ++inset;
+    }
+    return inset;
+}
+
+static inline int desk_corner_radius(int r, int width, int height)
+{
+    int limit = (width < height ? width : height) / 2;
+    r = desk_px(r);
+    return r < limit ? r : limit;
+}
+
 static inline void desk_round(GR_DRAW_ID id, GR_GC_ID gc, int x, int y,
                               int w, int h, int r, GR_COLOR c)
 {
-    GR_POINT points[] = {
-        {desk_px(x + r), desk_px(y)}, {desk_px(x + w - r), desk_px(y)},
-        {desk_px(x + w), desk_px(y + r)}, {desk_px(x + w), desk_px(y + h - r)},
-        {desk_px(x + w - r), desk_px(y + h)}, {desk_px(x + r), desk_px(y + h)},
-        {desk_px(x), desk_px(y + h - r)}, {desk_px(x), desk_px(y + r)},
-    };
+    int left = desk_px(x), top = desk_px(y);
+    int width = desk_px(x + w) - left, height = desk_px(y + h) - top;
+    if (width <= 0 || height <= 0)
+        return;
+
+    int radius = desk_corner_radius(r, width, height);
     GrSetGCForeground(gc, c);
-    GrFillPoly(id, gc, sizeof(points) / sizeof(points[0]), points);
+    if (height > 2 * radius)
+        GrFillRect(id, gc, left, top + radius, width, height - 2 * radius);
+
+    for (int row = 0; row < radius; ++row) {
+        int inset = desk_corner_inset(radius, row);
+        if (width <= 2 * inset)
+            continue;
+        GrFillRect(id, gc, left + inset, top + row, width - 2 * inset, 1);
+        GrFillRect(id, gc, left + inset, top + height - 1 - row, width - 2 * inset, 1);
+    }
+}
+
+static inline void desk_round_window(GR_WINDOW_ID window, int w, int h, int r)
+{
+    int width = desk_px(w), height = desk_px(h);
+    int radius = desk_corner_radius(r, width, height);
+    GR_REGION_ID shape = GrNewRegion();
+    if (!shape)
+        return;
+
+    if (height > 2 * radius) {
+        GR_RECT center = {0, radius, width, height - 2 * radius};
+        GrUnionRectWithRegion(shape, &center);
+    }
+    for (int row = 0; row < radius; ++row) {
+        int inset = desk_corner_inset(radius, row);
+        if (width <= 2 * inset)
+            continue;
+        GR_RECT edge = {inset, row, width - 2 * inset, 1};
+        GrUnionRectWithRegion(shape, &edge);
+        edge.y = height - 1 - row;
+        GrUnionRectWithRegion(shape, &edge);
+    }
+    GrSetWindowRegion(window, shape, GR_WINDOW_BOUNDING_MASK);
+    GrDestroyRegion(shape);
+}
+
+static struct {
+    GR_DRAW_ID window, pixmap;
+    int cols, rows;
+} desk_glass[8];
+
+static inline void desk_capture_glass(GR_WINDOW_ID window, GR_GC_ID gc)
+{
+    GR_WINDOW_INFO info;
+    GrGetWindowInfo(window, &info);
+    if (info.width <= 0 || info.height <= 0)
+        return;
+    unsigned slot = 0;
+    while (slot < sizeof(desk_glass) / sizeof(desk_glass[0]) &&
+           desk_glass[slot].window && desk_glass[slot].window != window)
+        ++slot;
+    if (slot == sizeof(desk_glass) / sizeof(desk_glass[0]))
+        return;
+
+    int cols = (info.width + 7) / 8, rows = (info.height + 7) / 8;
+    if (cols > 192) cols = 192;
+    if (rows > 128) rows = 128;
+    if (!desk_glass[slot].pixmap || desk_glass[slot].cols != cols || desk_glass[slot].rows != rows) {
+        if (desk_glass[slot].pixmap)
+            GrDestroyWindow(desk_glass[slot].pixmap);
+        desk_glass[slot].pixmap = GrNewPixmap(cols, rows, 0);
+        desk_glass[slot].cols = cols;
+        desk_glass[slot].rows = rows;
+        desk_glass[slot].window = window;
+    }
+    if (desk_glass[slot].pixmap)
+        GrDdosGlass(desk_glass[slot].pixmap, gc, info.x, info.y, info.width, info.height);
+}
+
+static inline bool desk_glass_fill(GR_DRAW_ID id, GR_GC_ID gc, int width, int height)
+{
+    for (unsigned i = 0; i < sizeof(desk_glass) / sizeof(desk_glass[0]); ++i) {
+        if (desk_glass[i].window == id && desk_glass[i].pixmap) {
+            GrStretchArea(id, gc, 0, 0, desk_px(width), desk_px(height),
+                          desk_glass[i].pixmap, 0, 0, desk_glass[i].cols, desk_glass[i].rows, GR_MODE_COPY);
+            return true;
+        }
+    }
+    return false;
 }
 
 static inline void desk_panel(GR_DRAW_ID id, GR_GC_ID gc, int width, int height)
 {
-    for (int y = 0; y < height; y += 48) {
-        int tint = 12 * (height - y) / height;
-        int band = height - y < 48 ? height - y : 48;
-        desk_fill(id, gc, 0, y, width, band, GR_RGB(24 + tint, 38 + tint, 60 + tint));
+    if (!desk_glass_fill(id, gc, width, height)) {
+        for (int y = 0; y < height; y += 48) {
+            int tint = 12 * (height - y) / height;
+            int band = height - y < 48 ? height - y : 48;
+            desk_fill(id, gc, 0, y, width, band, GR_RGB(7 + tint, 19 + tint, 43 + tint));
+        }
     }
     desk_fill(id, gc, 0, 0, width, 1, DESK_OUTLINE);
     desk_fill(id, gc, 0, 1, 1, height - 1, DESK_OUTLINE);
+    desk_fill(id, gc, width - 1, 1, 1, height - 1, DESK_CONTAINER);
+    desk_fill(id, gc, 1, height - 1, width - 1, 1, DESK_CONTAINER);
 }
 
 static inline void desk_icon(GR_DRAW_ID id, GR_GC_ID gc, enum desk_icon icon, int x, int y, int scale)

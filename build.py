@@ -1,6 +1,7 @@
 """Build DDOS for BIOS and x64 UEFI with native LLVM and NASM tools."""
 
 import argparse
+from io import BytesIO
 from pathlib import Path
 import shutil
 import struct
@@ -103,6 +104,21 @@ def build_native_app(source):
     return BUILD / "DDOSAPP.ELF"
 
 
+def prepare_wallpaper(path):
+    if path is None:
+        return None
+    try:
+        from PIL import Image, ImageOps
+    except ImportError as error:
+        raise ValueError("--wallpaper requires Pillow (python -m pip install Pillow)") from error
+    with Image.open(path) as image:
+        image = ImageOps.exif_transpose(image).convert("RGB")
+        image = ImageOps.fit(image, (320, 180), Image.Resampling.LANCZOS)
+        encoded = BytesIO()
+        image.save(encoded, format="BMP")
+        return encoded.getvalue()
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--file", action="append", type=Path, default=[],
@@ -113,6 +129,8 @@ def main():
                         help="install an i386 static BusyBox as B:/bin/busybox and B:/bin/sh")
     parser.add_argument("--runit", type=Path, help="directory containing static runit tools")
     parser.add_argument("--microwindows", type=Path, help="directory containing static Nano-X desktop programs")
+    parser.add_argument("--wallpaper", type=Path,
+                        help="import a JPEG, PNG, WebP, or other Pillow-readable desktop image")
     parser.add_argument("--desktop", action="store_true",
                         help="require a NanoWM desktop in the system image")
     parser.add_argument("--system-image", type=Path, default=BUILD / "system.ext2",
@@ -131,6 +149,10 @@ def main():
         parser.error("Desktop binaries are missing. Run sh tools/build-microwindows.sh or pass --microwindows.")
     if args.system_image.resolve() in (BUILD / "data.ext2", BUILD / "ddos.img"):
         parser.error("--system-image must be separate from the persistent data and boot images")
+    try:
+        wallpaper = prepare_wallpaper(args.wallpaper)
+    except (OSError, ValueError) as error:
+        parser.error(str(error))
     BUILD.mkdir(exist_ok=True)
     args.system_image.parent.mkdir(parents=True, exist_ok=True)
     native_app = build_native_app(args.app.resolve())
@@ -144,7 +166,8 @@ def main():
     try:
         image = make_boot_image((BUILD / "boot.bin").read_bytes(),
                                 (BUILD / "kernel.bin").read_bytes())
-        build_system(args.system_image, native_app, args.file, args.busybox, args.runit, args.microwindows)
+        build_system(args.system_image, native_app, args.file, args.busybox, args.runit,
+                     args.microwindows, wallpaper)
     except PermissionError as error:
         if getattr(error, "winerror", None) in (5, 32):
             parser.error(f"Windows could not replace {args.system_image}. "

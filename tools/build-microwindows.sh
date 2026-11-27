@@ -35,6 +35,11 @@ if ! cmp -s "$present" drivers/ddos_present.c; then
     cp "$present" drivers/ddos_present.c
     touch drivers/scr_fb.c
 fi
+glass="$root/user/desktop/glass.c"
+if ! cmp -s "$glass" nanox/ddos_glass.c; then
+    cp "$glass" nanox/ddos_glass.c
+    touch nanox/srvnet.c
+fi
 python -B "$root/tools/prepare-microwindows.py" "$(pwd)"
 
 # Build a separate server and client for the DDOS framebuffer.
@@ -69,12 +74,12 @@ MAKE
 fi
 # Keep the NanoWM desktop and frames in the DDOS blue palette.
 sed -E \
-    -e 's@GR_RGB\([^)]*\)(.*\/\* GR_COLOR_DESKTOP[[:space:]]+\*/)@GR_RGB(26, 62, 109)\1@' \
-    -e 's@GR_RGB\([^)]*\)(.*\/\* GR_COLOR_ACTIVECAPTION[[:space:]]+\*/)@GR_RGB(50, 82, 128)\1@' \
+    -e 's@GR_RGB\([^)]*\)(.*\/\* GR_COLOR_DESKTOP[[:space:]]+\*/)@GR_RGB(9, 19, 49)\1@' \
+    -e 's@GR_RGB\([^)]*\)(.*\/\* GR_COLOR_ACTIVECAPTION[[:space:]]+\*/)@GR_RGB(22, 57, 116)\1@' \
     -e 's@GR_RGB\([^)]*\)(.*\/\* GR_COLOR_ACTIVECAPTIONTEXT[[:space:]]+\*/)@GR_RGB(234, 243, 255)\1@' \
-    -e 's@GR_RGB\([^)]*\)(.*\/\* GR_COLOR_INACTIVECAPTION[[:space:]]+\*/)@GR_RGB(38, 56, 84)\1@' \
+    -e 's@GR_RGB\([^)]*\)(.*\/\* GR_COLOR_INACTIVECAPTION[[:space:]]+\*/)@GR_RGB(13, 30, 65)\1@' \
     -e 's@GR_RGB\([^)]*\)(.*\/\* GR_COLOR_INACTIVECAPTIONTEXT[[:space:]]+\*/)@GR_RGB(180, 199, 227)\1@' \
-    -e 's@GR_RGB\([^)]*\)(.*\/\* GR_COLOR_WINDOWFRAMELT[[:space:]]+\*/)@GR_RGB(91, 122, 162)\1@' \
+    -e 's@GR_RGB\([^)]*\)(.*\/\* GR_COLOR_WINDOWFRAMELT[[:space:]]+\*/)@GR_RGB(54, 102, 167)\1@' \
     -e 's@GR_RGB\([^)]*\)(.*\/\* GR_COLOR_BTNHIGHLIGHT[[:space:]]+\*/)@GR_RGB(132, 166, 207)\1@' \
     -e 's@GR_RGB\([^)]*\)(.*\/\* GR_COLOR_3DLIGHT[[:space:]]+\*/)@GR_RGB(174, 205, 255)\1@' \
     nanox/nxdraw.c > nanox/nxdraw.ddos

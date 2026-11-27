@@ -1,5 +1,6 @@
 #include "desk_ui.h"
 #include "desktop_status.h"
+#include "wallpaper.h"
 
 #include <ctype.h>
 #include <fcntl.h>
@@ -10,8 +11,8 @@
 #include <unistd.h>
 
 enum {
-    BAR_H = 38, START_W = 104, TILE_W = 108, TILE_H = 88,
-    MENU_W = 304, MENU_H = 436, SEARCH_Y = 16,
+    BAR_H = 38, START_W = 104, TILE_W = 116, TILE_H = 94,
+    MENU_W = 304, MENU_H = 436, SEARCH_Y = 16, TILE_RADIUS = 12, MENU_RADIUS = 14,
     ROW_TOP = 72, ROW_H = 46, POWER_Y = 364,
 };
 
@@ -50,11 +51,12 @@ static void paint_bar(int width)
         strftime(clock, sizeof(clock), "%H:%M UTC", &calendar);
         strftime(date, sizeof(date), "%a, %d %b %Y", &calendar);
     }
-    desk_fill(bar, gc, 0, 0, width, BAR_H, DESK_SURFACE);
+    if (!desk_glass_fill(bar, gc, width, BAR_H))
+        desk_fill(bar, gc, 0, 0, width, BAR_H, DESK_SURFACE);
     desk_fill(bar, gc, 0, 0, width, 1, DESK_OUTLINE);
     desk_round(bar, gc, 8, 5, START_W - 16, 28, 12, menu_open ? DESK_HIGH : DESK_CONTAINER);
-    desk_icon(bar, gc, ICON_DDOS, 17, 11, 2);
-    desk_text(bar, gc, 42, 13, "DDOS", DESK_ON_SURFACE);
+    desk_icon(bar, gc, ICON_DDOS, 16, 7, 3);
+    desk_text(bar, gc, 47, 13, "DDOS", DESK_ON_SURFACE);
     desk_text(bar, gc, START_W + 12, 13, "Esc to return", DESK_MUTED);
 
     int clock_x = width - 14 - desk_text_width(gc, clock);
@@ -68,12 +70,12 @@ static void paint_tile(const struct app *app)
 {
     GrDdosFrame(GR_TRUE);
     desk_panel(app->tile, gc, TILE_W, TILE_H);
-    desk_round(app->tile, gc, 37, 10, 34, 34, 9, DESK_HIGH);
-    desk_icon(app->tile, gc, app->icon, 46, 19, 2);
+    desk_round(app->tile, gc, (TILE_W - 44) / 2, 9, 44, 44, 11, DESK_HIGH);
+    desk_icon(app->tile, gc, app->icon, (TILE_W - 24) / 2, 19, 3);
     desk_text(app->tile, gc, (TILE_W - desk_text_width(gc, app->title)) / 2,
-              app->icon == ICON_CALCULATOR ? 51 : 60, app->title, DESK_ON_SURFACE);
+              app->icon == ICON_CALCULATOR ? 57 : 65, app->title, DESK_ON_SURFACE);
     if (app->icon == ICON_CALCULATOR)
-        desk_text(app->tile, gc, (TILE_W - desk_text_width(gc, "F2")) / 2, 70, "F2", DESK_MUTED);
+        desk_text(app->tile, gc, (TILE_W - desk_text_width(gc, "F2")) / 2, 75, "F2", DESK_MUTED);
     GrDdosFrame(GR_FALSE);
 }
 
@@ -139,7 +141,7 @@ static void paint_menu(void)
         int y = ROW_TOP + i * ROW_H;
         desk_round(menu, gc, 16, y, MENU_W - 32, 40, 10,
                    i == selected ? DESK_HIGH : DESK_CONTAINER);
-        desk_icon(menu, gc, visible[i]->icon, 29, y + 12, 2);
+        desk_icon(menu, gc, visible[i]->icon, 27, y + 8, 3);
         desk_text(menu, gc, 60, y + 13, visible[i]->title, DESK_ON_SURFACE);
     }
     if (!count)
@@ -204,6 +206,7 @@ static void toggle_menu(int width)
         query[0] = 0;
         selected = 0;
         notice = 0;
+        desk_capture_glass(menu, gc);
         GrMapWindow(menu);
         GrRaiseWindow(menu);
         GrSetFocus(menu);
@@ -260,6 +263,44 @@ static void menu_key(unsigned key, int width)
     paint_menu();
 }
 
+static void install_wallpaper(void)
+{
+    GR_WINDOW_ID pixmap = desk_wallpaper_load("D:/wallpaper.bmp", gc);
+    if (!pixmap)
+        pixmap = desk_wallpaper_load("B:/wallpaper.bmp", gc);
+    if (pixmap) {
+        GrSetBackgroundPixmap(GR_ROOT_WINDOW_ID, pixmap, GR_BACKGROUND_STRETCH);
+        GrClearWindow(GR_ROOT_WINDOW_ID, GR_FALSE);
+        return;
+    }
+
+    enum { COLS = 112, ROWS = 64 };
+    static GR_COLOR pixels[COLS * ROWS];
+    for (int y = 0; y < ROWS; ++y) {
+        for (int x = 0; x < COLS; ++x) {
+            /* Two broad pools of color and a soft diagonal band. */
+            int u = x - 82, v = y - 18;
+            int teal = 54 - (u * u + v * v) / 29;
+            u = x - 34;
+            v = y - 57;
+            int indigo = 65 - (u * u + v * v) / 30;
+            int distance = 4 * y - 2 * x - 5;
+            int ribbon = 34 - (distance * distance) / 120;
+            teal = teal > 0 ? teal : 0;
+            indigo = indigo > 0 ? indigo : 0;
+            ribbon = ribbon > 0 ? ribbon : 0;
+            pixels[y * COLS + x] = GR_RGB(5 + indigo / 3, 13 + teal + ribbon,
+                                            33 + indigo + teal + ribbon * 2);
+        }
+    }
+    pixmap = GrNewPixmap(COLS, ROWS, 0);
+    if (pixmap) {
+        GrArea(pixmap, gc, 0, 0, COLS, ROWS, pixels, MWPF_RGB);
+        GrSetBackgroundPixmap(GR_ROOT_WINDOW_ID, pixmap, GR_BACKGROUND_STRETCH);
+        GrClearWindow(GR_ROOT_WINDOW_ID, GR_FALSE);
+    }
+}
+
 static void place_menu(const GR_SCREEN_INFO *screen)
 {
     int height = launcher ? POWER_Y : MENU_H;
@@ -267,6 +308,7 @@ static void place_menu(const GR_SCREEN_INFO *screen)
                  launcher ? (screen->rows - desk_px(height + BAR_H)) / 2
                           : screen->rows - desk_px(BAR_H + height + 8));
     GrResizeWindow(menu, desk_px(MENU_W), desk_px(height));
+    desk_round_window(menu, MENU_W, height, MENU_RADIUS);
 }
 
 static void place_windows(const GR_SCREEN_INFO *screen)
@@ -278,6 +320,7 @@ static void place_windows(const GR_SCREEN_INFO *screen)
         GrMoveWindow(apps[i].tile, desk_px(24 + i / 4 * (TILE_W + 12)),
                      desk_px(24 + i % 4 * (TILE_H + 12)));
         GrResizeWindow(apps[i].tile, desk_px(TILE_W), desk_px(TILE_H));
+        desk_round_window(apps[i].tile, TILE_W, TILE_H, TILE_RADIUS);
         paint_tile(&apps[i]);
     }
 }
@@ -308,6 +351,8 @@ int main(void)
     gc = GrNewGC();
     GrSetGCUseBackground(gc, GR_FALSE);
     desk_install_font(gc);
+    install_wallpaper();
+    desk_capture_glass(bar, gc);
     GrSelectEvents(bar, GR_EVENT_MASK_EXPOSURE | GR_EVENT_MASK_TIMER |
                          GR_EVENT_MASK_BUTTON_DOWN | GR_EVENT_MASK_KEY_DOWN);
     GrSelectEvents(menu, GR_EVENT_MASK_EXPOSURE | GR_EVENT_MASK_BUTTON_DOWN |
@@ -321,6 +366,8 @@ int main(void)
                                      desk_px(24 + i % 4 * (TILE_H + 12)),
                                      desk_px(TILE_W), desk_px(TILE_H), DESK_CONTAINER);
         GrSelectEvents(apps[i].tile, GR_EVENT_MASK_EXPOSURE | GR_EVENT_MASK_BUTTON_DOWN);
+        desk_round_window(apps[i].tile, TILE_W, TILE_H, TILE_RADIUS);
+        desk_capture_glass(apps[i].tile, gc);
         GrMapWindow(apps[i].tile);
     }
     GrMapWindow(bar);

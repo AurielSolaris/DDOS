@@ -7,10 +7,10 @@ from pathlib import Path
 root = Path(sys.argv[1])
 
 
-def patch(file, old, new):
+def patch(file, old, new, marker=None):
     path = root / file
     text = path.read_text()
-    if new in text:
+    if new in text or (marker is not None and marker in text):
         return
     if text.count(old) != 1:
         raise SystemExit(f"Unsupported Microwindows source at {file}: {old!r}")
@@ -47,7 +47,7 @@ typedef struct {
     UINT32 begin;
 } nxDdosFrameReq;
 
-#define GrTotalNumCalls         127""")
+#define GrTotalNumCalls         127""", marker="#define GrNumDdosFrame")
 patch("include/nano-X.h", "void\t\tGrFlush(void);",
       "void\t\tGrFlush(void);\nvoid\t\tGrDdosFrame(GR_BOOL begin);")
 patch("nanox/client.c", "void \nGrFlush(void)\n{",
@@ -63,7 +63,7 @@ GrDdosFrame(GR_BOOL begin)
 }
 
 void \nGrFlush(void)
-{""")
+{""", marker="GrDdosFrame(GR_BOOL begin)")
 patch("nanox/srvnet.c", "/* 125 */ {GrDrawImagePartToFitWrapper, \"GrDrawImagePartToFit\"},",
       "/* 125 */ {GrDrawImagePartToFitWrapper, \"GrDrawImagePartToFit\"},\n"
       "\t/* 126 */ {GrDdosFrameWrapper, \"GrDdosFrame\"},")
@@ -82,4 +82,65 @@ GrDdosFrameWrapper(void *r)
 }
 
 static void
-GrCreateFontFromBufferWrapper(void *r)""")
+GrCreateFontFromBufferWrapper(void *r)""", marker="GrDdosFrameWrapper(void *r)")
+
+patch("include/nanowm.h", "#define CXBORDER\t3", "#define CXBORDER\t4")
+patch("include/nanowm.h", "#define CYBORDER\t3", "#define CYBORDER\t4")
+patch("include/nanowm.h", "#define CYCAPTION\t12", "#define CYCAPTION\t20")
+patch("include/nanowm.h", "#define CXCLOSEBOX\t9", "#define CXCLOSEBOX\t14")
+patch("include/nanowm.h", "#define CYCLOSEBOX\t9", "#define CYCLOSEBOX\t14")
+patch("nanox/nxproto.h", "#define GrTotalNumCalls         127",
+      """#define GrNumDdosGlass          127
+typedef struct {
+    BYTE8 reqType;
+    BYTE8 hilength;
+    UINT16 length;
+    IDTYPE pixmap, gc;
+    INT16 x, y, width, height;
+} nxDdosGlassReq;
+
+#define GrTotalNumCalls         128""")
+patch("include/nano-X.h", "void\t\tGrDdosFrame(GR_BOOL begin);",
+      "void\t\tGrDdosFrame(GR_BOOL begin);\n"
+      "void\t\tGrDdosGlass(GR_DRAW_ID pixmap, GR_GC_ID gc, int x, int y, int width, int height);")
+patch("nanox/client.c", "void \nGrFlush(void)\n{",
+      """void
+GrDdosGlass(GR_DRAW_ID pixmap, GR_GC_ID gc, int x, int y, int width, int height)
+{
+    LOCK(&nxGlobalLock);
+    nxDdosGlassReq *req = AllocReq(DdosGlass);
+    req->pixmap = pixmap;
+    req->gc = gc;
+    req->x = x;
+    req->y = y;
+    req->width = width;
+    req->height = height;
+    UNLOCK(&nxGlobalLock);
+}
+
+void \nGrFlush(void)
+{""")
+patch("nanox/srvnet.c", "static void\nGrDdosFrameWrapper(void *r)",
+      '#include "ddos_glass.c"\n\nstatic void\nGrDdosFrameWrapper(void *r)')
+patch("nanox/srvnet.c", '/* 126 */ {GrDdosFrameWrapper, "GrDdosFrame"},',
+      '/* 126 */ {GrDdosFrameWrapper, "GrDdosFrame"},\n'
+      '\t/* 127 */ {GrDdosGlassWrapper, "GrDdosGlass"},')
+
+# Blit clipping uses half-open rectangles. Use their actual widths so the
+# scaler never samples an extra row or column from a pixmap.
+for axis in ("x", "y"):
+    patch("engine/devblit.c",
+          f"{axis}_numerator = (s{axis}2 - s{axis}1 + 1) << 1;",
+          f"{axis}_numerator = (s{axis}2 - s{axis}1) << 1;")
+    patch("engine/devblit.c",
+          f"{axis}_denominator = (d{axis}2 - d{axis}1 + 1) << 1;",
+          f"{axis}_denominator = (d{axis}2 - d{axis}1) << 1;")
+patch("engine/devblit.c",
+      "The +1s are because we care about *sizes*, not deltas.  \n"
+      "\t * (Without the +1s it just doesn't work properly.)",
+      "The lengths use half-open source and destination rectangles.")
+
+patch("engine/devblit.c",
+      "if (dx2 < 0 || dy2 < 0 || dx1 > dstpsd->xvirtres || dy1 > dstpsd->yvirtres ||",
+      "if (sx1 == sx2 || sy1 == sy2 || dx2 < 0 || dy2 < 0 ||\n"
+      "\t\tdx1 > dstpsd->xvirtres || dy1 > dstpsd->yvirtres ||")
