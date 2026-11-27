@@ -8,7 +8,8 @@ DOS-compatible real-mode program loader, and a persistent ext2 data volume.
 
 The [site directory](site/) contains the DDOS project website, built with
 React, TanStack Router, SCSS, and a WebGL wallpaper with a CSS fallback.
-It includes an interactive desktop preview and a QEMU build guide.
+It includes an interactive desktop preview with draggable app windows,
+a keyboard-driven simulated terminal, and a QEMU build guide.
 
 ```sh
 cd site

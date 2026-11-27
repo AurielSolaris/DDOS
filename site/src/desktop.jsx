@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { Activity, Calculator, FileText, FolderOpen, Search, Settings, Terminal, X } from 'lucide-react'
+import { TerminalDemo } from './preview-terminal'
 import { Wallpaper } from './wallpaper'
 
 export function Mark({ className }) {
@@ -55,7 +56,7 @@ function CalculatorDemo() {
     </div>
 }
 
-function AppContent({ active, note, updateNote }) {
+function AppContent({ active, foreground, note, updateNote }) {
     switch (active) {
         case 'settings':
             return <><div className="window-heading"><Settings size={17}/> System information</div>
@@ -74,14 +75,80 @@ function AppContent({ active, note, updateNote }) {
             return <><div className="window-heading"><Activity size={17}/> Desktop preview</div>
                 <p className="window-copy">Native DDOS Task Manager reports mapped memory for each process.</p></>
         case 'terminal':
-            return <div className="terminal-demo"><p>D:/&gt; VER</p><p>DDOS — DOS Derived OS</p><p>32-bit protected mode</p><p>D:/&gt; <span>▌</span></p></div>
+            return <TerminalDemo foreground={foreground} />
         default:
             return null
     }
 }
 
+function clampPosition(position, desktop, window, taskbar) {
+    return {
+        left: Math.round(Math.max(0, Math.min(position.left, desktop.clientWidth - window.offsetWidth))),
+        top: Math.round(Math.max(0, Math.min(position.top, taskbar.offsetTop - window.offsetHeight))),
+    }
+}
+
+function DesktopWindow({ app, foreground, stack, surface, taskbar, raise, close, note, updateNote }) {
+    const element = useRef(null)
+    const drag = useRef(null)
+    const [position, setPosition] = useState(null)
+    const [dragging, setDragging] = useState(false)
+    const Icon = app.icon
+
+    useEffect(() => {
+        const observer = new ResizeObserver(() => {
+            setPosition((previous) => {
+                if (!previous) return previous
+                const next = clampPosition(previous, surface.current, element.current, taskbar.current)
+                return next.left === previous.left && next.top === previous.top ? previous : next
+            })
+        })
+        observer.observe(surface.current)
+        observer.observe(element.current)
+        return () => observer.disconnect()
+    }, [surface, taskbar])
+
+    function startDrag(event) {
+        if (event.button !== 0 || drag.current || event.target.closest('button')) return
+        const desktop = surface.current.getBoundingClientRect()
+        const window = element.current.getBoundingClientRect()
+        drag.current = { id: event.pointerId, x: event.clientX - window.left + desktop.left,
+            y: event.clientY - window.top + desktop.top }
+        event.currentTarget.setPointerCapture(event.pointerId)
+        setDragging(true)
+    }
+
+    function moveWindow(event) {
+        const grab = drag.current
+        if (grab?.id !== event.pointerId) return
+        const next = { left: event.clientX - grab.x, top: event.clientY - grab.y }
+        setPosition(clampPosition(next, surface.current, element.current, taskbar.current))
+    }
+
+    function endDrag(event) {
+        if (drag.current?.id !== event.pointerId) return
+        drag.current = null
+        setDragging(false)
+    }
+
+    const style = { zIndex: stack + 1, '--window-offset': apps.indexOf(app) * 5 + 'px' }
+    if (position) Object.assign(style, position, { right: 'auto' })
+
+    return <section ref={element} className={'demo-window' + (dragging ? ' is-dragging' : '')}
+        aria-label={app.title} style={style} onPointerDown={raise}>
+        <header onPointerDown={startDrag} onPointerMove={moveWindow} onPointerUp={endDrag}
+            onPointerCancel={endDrag} onLostPointerCapture={endDrag}>
+            <Icon size={14}/><strong>{app.title}</strong>
+            <button type="button" aria-label={'Close ' + app.title} onClick={close}><X size={15}/></button>
+        </header>
+        <div className="demo-window-content">
+            <AppContent active={app.id} foreground={foreground} note={note} updateNote={updateNote}/>
+        </div>
+    </section>
+}
+
 export function Desktop({ expanded = false }) {
-    const [active, setActive] = useState('settings')
+    const [stack, setStack] = useState(['settings'])
     const [menu, setMenu] = useState(false)
     const [query, setQuery] = useState('')
     const [note, setNote] = useState('Welcome to DDOS.\n\nThis is a browser preview of Notepad.')
@@ -89,8 +156,10 @@ export function Desktop({ expanded = false }) {
     const searchInput = useRef(null)
     const trigger = useRef(null)
     const visible = apps.filter((app) => app.title.toLowerCase().includes(query.trim().toLowerCase()))
-    const app = apps.find(({ id }) => id === active)
-    const AppIcon = app?.icon
+    const surface = useRef(null)
+    const taskbar = useRef(null)
+    const active = stack.at(-1)
+    const openApps = apps.filter(({ id }) => stack.includes(id))
 
     useEffect(() => {
         const timer = setInterval(() => setTime(new Date()), 30_000)
@@ -101,8 +170,16 @@ export function Desktop({ expanded = false }) {
         if (menu) searchInput.current?.focus()
     }, [menu])
 
+    function raiseApp(id) {
+        setStack((previous) => previous.at(-1) === id ? previous : [...previous.filter((item) => item !== id), id])
+    }
+
+    function closeApp(id) {
+        setStack((previous) => previous.filter((item) => item !== id))
+    }
+
     function showApp(id) {
-        setActive(id)
+        raiseApp(id)
         setMenu(false)
         setQuery('')
     }
@@ -123,19 +200,16 @@ export function Desktop({ expanded = false }) {
     return <div className={'desktop-frame' + (expanded ? ' desktop-frame--expanded' : '')} onKeyDown={desktopKeys}>
         <div className="frame-bar"><span className="frame-lights" aria-hidden="true"><i/><i/><i/></span>
             <span>DDOS Desktop</span><span className="live-label"><i/> INTERACTIVE</span></div>
-        <div className="desktop-screen">
+        <div className="desktop-screen" ref={surface}>
             <Wallpaper />
             <div className="desktop-shortcuts" aria-label="Desktop shortcuts">
                 {apps.slice(0, 4).map(({ id, title, icon: Icon }) => <button key={id} type="button" onClick={() => showApp(id)}>
                     <span><Icon size={18} strokeWidth={1.7}/></span>{title}
                 </button>)}
             </div>
-            {app && <section className="demo-window" aria-label={app.title}>
-                <header><AppIcon size={14}/><strong>{app.title}</strong>
-                    <button type="button" aria-label={'Close ' + app.title} onClick={() => setActive(null)}><X size={15}/></button>
-                </header>
-                <div className="demo-window-content"><AppContent key={active} active={active} note={note} updateNote={setNote}/></div>
-            </section>}
+            {openApps.map((app) => <DesktopWindow key={app.id} app={app} foreground={active === app.id}
+                stack={stack.indexOf(app.id)} surface={surface} taskbar={taskbar}
+                raise={() => raiseApp(app.id)} close={() => closeApp(app.id)} note={note} updateNote={setNote}/>)}
             {menu && <div className="demo-launcher">
                 <form role="search" onSubmit={(event) => { event.preventDefault(); if (visible.length) showApp(visible[0].id) }}>
                     <Search size={16}/><input aria-label="Search apps" ref={searchInput} placeholder="Search apps" value={query} onChange={(event) => setQuery(event.target.value)}/>
@@ -145,9 +219,14 @@ export function Desktop({ expanded = false }) {
                 )}
                 {!visible.length && <p>No matching apps</p>}
             </div>}
-            <div className="desktop-taskbar">
+            <div className="desktop-taskbar" ref={taskbar}>
                 <button type="button" ref={trigger} aria-expanded={menu} onClick={() => menu ? closeMenu() : setMenu(true)}><Mark/> DDOS</button>
-                <span className="taskbar-open">{app && <><AppIcon size={14}/>{app.title}</>}</span>
+                <div className="taskbar-apps" aria-label="Open apps">
+                    {openApps.map(({ id, title, icon: Icon }) => <button key={id} type="button"
+                        aria-label={'Focus ' + title} title={title} aria-pressed={id === active} onClick={() => raiseApp(id)}>
+                        <Icon size={14}/>
+                    </button>)}
+                </div>
                 <time dateTime={time.toISOString()}>{time.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'UTC' })} UTC</time>
             </div>
         </div>

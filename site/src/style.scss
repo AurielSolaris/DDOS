@@ -145,10 +145,11 @@ p { margin: 0; }
 }
 .demo-window {
   @include frost(rgba(10, 24, 51, .76));
-  position: absolute; width: 58%; max-height: calc(100% - 5.1rem); right: 6%; top: 3rem;
+  position: absolute; width: 58%; max-height: calc(100% - 5.1rem); right: 6%; top: calc(3rem + var(--window-offset, 0px));
   border-radius: .69rem; overflow: auto;
   box-shadow: 0 .85rem 2.2rem rgba(3, 10, 31, .52), inset 0 0 0 1px rgba(152, 192, 250, .09);
   header {
+    cursor: grab; touch-action: none; user-select: none;
     display: flex; align-items: center; gap: .42rem; padding: .23rem .38rem .23rem .68rem;
     color: #bad6f6; background: #0b1932; border-bottom: 1px solid #365683; font-size: .77rem;
     button {
@@ -158,6 +159,7 @@ p { margin: 0; }
     }
   }
 }
+.demo-window.is-dragging header { cursor: grabbing; }
 .demo-window-content { padding: .75rem; }
 .window-heading { display: flex; align-items: center; gap: .48rem; margin-bottom: .7rem; color: #e0eeff; font-size: .87rem; font-weight: 650; }
 .window-heading svg { color: $blue; }
@@ -173,7 +175,18 @@ p { margin: 0; }
   span { width: .35rem; height: .35rem; border-radius: 50%; background: #87d8ff; }
 }
 .window-copy { color: $muted; font-size: .9rem; line-height: 1.55; }
-.terminal-demo { font: .8rem/1.55 ui-monospace, monospace; color: #b8e7ff; }
+.terminal-demo {
+  min-height: 9.5rem; max-height: 11rem; overflow: auto; padding: .65rem;
+  background: #081328; border-radius: .45rem; color: #b8e7ff;
+  font: .8rem/1.55 ui-monospace, monospace;
+  p { white-space: pre-wrap; overflow-wrap: anywhere; }
+  form { display: flex; align-items: baseline; gap: .35ch; }
+  label { flex-shrink: 0; }
+  input {
+    min-width: 0; width: 100%; background: transparent; color: inherit;
+    font: inherit; padding: 0; border: 0; border-radius: 2px; outline-offset: 1px;
+  }
+}
 .demo-window textarea {
   display: block; resize: vertical; width: 100%; min-height: 8.2rem; padding: .65rem; border-radius: .45rem;
   color: #e4f1ff; background: #091328; border: 1px solid #365480; font: .84rem/1.45 ui-monospace, monospace;
@@ -190,19 +203,21 @@ p { margin: 0; }
 }
 .desktop-taskbar {
   @include frost(rgba(8, 19, 42, .87));
-  position: absolute; display: flex; align-items: center; gap: .5rem; bottom: 0; left: 0; right: 0;
+  position: absolute; z-index: 21; display: flex; align-items: center; gap: .5rem; bottom: 0; left: 0; right: 0;
   padding: .25rem .6rem; min-height: 2.25rem; border-inline: 0; border-bottom: 0;
-  button, .taskbar-open { display: inline-flex; align-items: center; justify-content: center; gap: .36rem; color: #dbeaff; border-radius: .44rem; font-size: .73rem; white-space: nowrap; }
+  button { display: inline-flex; align-items: center; justify-content: center; gap: .36rem; color: #dbeaff; border-radius: .44rem; font-size: .73rem; white-space: nowrap; }
   button { background: #173865; border: 1px solid #335887; padding: .28rem .44rem; }
   button:hover { background: #274b80; }
   .mark { width: .8rem; }
-  .taskbar-open { padding: .22rem .36rem; color: #afc8ec; }
-  .taskbar-open svg { color: $blue; }
-  time { margin-left: auto; color: #d5e6ff; font-size: .75rem; }
+  .taskbar-apps { display: flex; gap: .25rem; min-width: 0; overflow-x: auto; padding: 2px; }
+  .taskbar-apps button { color: $blue; padding: .22rem .38rem; }
+  .taskbar-apps button[aria-pressed='true'] { background: #325992; }
+  .taskbar-apps button:focus-visible { outline-offset: 0; }
+  time { margin-left: auto; white-space: nowrap; color: #d5e6ff; font-size: .75rem; }
 }
 .demo-launcher {
   @include frost(rgba(13, 27, 56, .93));
-  display: grid; gap: .26rem; position: absolute; bottom: 2.55rem; left: .5rem; z-index: 2;
+  display: grid; gap: .26rem; position: absolute; bottom: 2.55rem; left: .5rem; z-index: 20;
   width: min(15rem, calc(100% - 1rem)); padding: .5rem; border-radius: .75rem; box-shadow: 0 .4rem 1.9rem #030b20;
   form, button { display: flex; align-items: center; gap: .5rem; text-align: left; border: 0; border-radius: .4rem; padding: .38rem .45rem; color: $ink; background: #14294b; font-size: .82rem; }
   form { background: #09162f; }
@@ -216,7 +231,7 @@ p { margin: 0; }
   .desktop-screen { min-height: clamp(26rem, 60vw, 36rem); }
   .desktop-shortcuts { grid-template-columns: repeat(2, 5.5rem); gap: .6rem; }
   .desktop-shortcuts button { min-height: 4.8rem; font-size: .8rem; }
-  .demo-window { max-width: 34rem; right: 15%; top: 13%; }
+  .demo-window { max-width: 34rem; right: 15%; top: calc(13% + var(--window-offset, 0px)); }
   .demo-window-content { padding: 1.1rem; }
   .spec-table { font-size: .94rem; gap: .85rem; }
 }
@@ -303,7 +318,7 @@ p { margin: 0; }
   .live-label { font-size: .58rem; }
   .desktop-shortcuts, .desktop-frame--expanded .desktop-shortcuts { grid-template-columns: repeat(4, 3.65rem); }
   .desktop-shortcuts button, .desktop-frame--expanded .desktop-shortcuts button { min-height: 3.25rem; font-size: .63rem; }
-  .demo-window, .desktop-frame--expanded .demo-window { width: 94%; right: 3%; top: 4.7rem; }
+  .demo-window, .desktop-frame--expanded .demo-window { width: 94%; right: 3%; top: calc(4.7rem + var(--window-offset, 0px)); }
   .demo-window-content, .desktop-frame--expanded .demo-window-content { padding: .5rem; }
   .spec-table, .desktop-frame--expanded .spec-table { font-size: .69rem; gap: .45rem; }
   .boot-cta { align-items: flex-start; flex-direction: column; }
